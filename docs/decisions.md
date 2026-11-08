@@ -2,6 +2,9 @@
 
 These are settled decisions, newest first. Reopen one only with new information, and record the change here.
 
+## 2026-11-08: Bounded on-demand topics and SSE streams
+Any client can ask for any topic name. Without limits, that means unbounded subscriptions and retry tasks. On-demand topics (`--max-topics`) and SSE streams (`--max-streams`) are capped, and the excess gets `503`. Standing topics are configured by the operator, so they don't count toward the cap.
+
 ## 2026-11-08: We convert type descriptions ourselves
 hiroz 0.2.1's `discover_topic_schema` rejects `byte`, `char`, bounded and fixed strings ("Unknown type ID: 16/21"). That rules out `diagnostic_msgs`, `/parameter_events` and anything with `byte[]`. `pipes-bus/src/type_desc.rs` calls the standard `~/get_type_description` service through hiroz's public `GetTypeDescription` types and maps every ROS type id. Wide strings and `long double` stay unsupported because hiroz can't decode them. **Remove `type_desc.rs` once hiroz maps every id**; the fix should go upstream.
 

@@ -17,6 +17,8 @@ Every option is a flag, and can also be set with the environment variable shown.
 | `--max-rate-hz` | `RMF_PIPES_MAX_RATE_HZ` | `20` | Per-topic admission cap, `0` (off) or 0.001–1e6. Within each interval only the **newest** sample is delivered, at the end of the interval; the ones it replaced are counted as `rate_limited`. |
 | `--queue-depth` | `RMF_PIPES_QUEUE_DEPTH` | `16` | Per-subscription queue between zenoh and the hub (1–10000). The oldest samples are dropped when the hub falls behind; hiroz doesn't count these drops. For transient_local publishers the depth is raised to their history depth (up to 100), so late-join history isn't truncated. |
 | `--max-payload-bytes` | `RMF_PIPES_MAX_PAYLOAD_BYTES` | `1048576` | Larger payloads are delivered with `data: null, omitted: "too_large"`, and are not decoded. |
+| `--max-topics` | `RMF_PIPES_MAX_TOPICS` | `256` | Most topics subscribed **on demand** at once (standing topics don't count). Further new topics get `503 too_many_topics`. |
+| `--max-streams` | `RMF_PIPES_MAX_STREAMS` | `256` | Most concurrent SSE streams. Further streams get `503 too_many_streams`. |
 | `--discovery-timeout` | `RMF_PIPES_DISCOVERY_TIMEOUT` | `5s` | How long to wait for a publisher's type description when subscribing. |
 
 ## Startup behaviour

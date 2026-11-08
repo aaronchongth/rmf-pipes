@@ -16,6 +16,7 @@ pub struct GraphSnapshot {
 }
 
 /// A ROS node.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Node {
     /// Fully qualified name, e.g. `/fleet/tinyRobot1_adapter`.
@@ -28,6 +29,7 @@ pub struct Node {
 
 /// What an [`Endpoint`] is. Variants are self-describing.
 #[allow(missing_docs)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EndpointKind {
@@ -45,6 +47,7 @@ impl EndpointKind {
 }
 
 /// One publisher, subscription, service server or client.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Endpoint {
     /// What kind of endpoint this is.
@@ -62,6 +65,7 @@ pub struct Endpoint {
 }
 
 /// The subset of QoS that matters for subscribing and for diagnosing.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct Qos {
     /// Reliable (vs best effort).
@@ -73,6 +77,7 @@ pub struct Qos {
 }
 
 /// One (type name, hash) pair seen on a topic, with how many endpoints use it.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TopicType {
     /// ROS type name.
@@ -86,31 +91,25 @@ pub struct TopicType {
 }
 
 /// Summary of one topic across all its endpoints.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TopicSummary {
     /// Topic name, e.g. `/chatter`.
     pub name: String,
     /// Every (type, hash) pair seen on the topic.
     pub types: Vec<TopicType>,
+    /// Total publishers across all types.
+    pub publishers: usize,
+    /// Total subscriptions across all types.
+    pub subscriptions: usize,
     /// More than one (type, hash) pair on this topic. rmw_zenoh puts the hash in
     /// the key expression, so mismatched endpoints silently never see each
     /// other's data.
     pub mismatch: bool,
 }
 
-impl TopicSummary {
-    /// Total publishers across all types.
-    pub fn publishers(&self) -> usize {
-        self.types.iter().map(|t| t.publishers).sum()
-    }
-
-    /// Total subscriptions across all types.
-    pub fn subscriptions(&self) -> usize {
-        self.types.iter().map(|t| t.subscriptions).sum()
-    }
-}
-
 /// Summary of one service.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ServiceSummary {
     /// Service name.
@@ -166,6 +165,8 @@ impl GraphSnapshot {
                 TopicSummary {
                     name: name.to_owned(),
                     mismatch: types.len() > 1,
+                    publishers: types.iter().map(|t| t.publishers).sum(),
+                    subscriptions: types.iter().map(|t| t.subscriptions).sum(),
                     types,
                 }
             })
@@ -246,12 +247,7 @@ pub(crate) mod tests {
         assert_eq!(topics.len(), 2, "services must not appear as topics");
         let a = &topics[0];
         assert_eq!(
-            (
-                a.name.as_str(),
-                a.publishers(),
-                a.subscriptions(),
-                a.mismatch
-            ),
+            (a.name.as_str(), a.publishers, a.subscriptions, a.mismatch),
             ("/a", 2, 1, false)
         );
         let b = &topics[1];

@@ -5,6 +5,7 @@ use serde::Serialize;
 use time::OffsetDateTime;
 
 /// One received message with rmf-pipes' envelope.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Sample {
     /// Topic name.
@@ -15,15 +16,18 @@ pub struct Sample {
     pub type_hash: String,
     /// When rmf-pipes received the sample.
     #[serde(with = "time::serde::rfc3339")]
+    #[cfg_attr(feature = "openapi", schema(value_type = String, format = DateTime))]
     pub received_at: OffsetDateTime,
     /// Publisher-side timestamp from the rmw_zenoh attachment, when present.
     #[serde(with = "time::serde::rfc3339::option")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = DateTime))]
     pub source_timestamp: Option<OffsetDateTime>,
     /// Publisher sequence number from the rmw_zenoh attachment, when present.
     pub sequence: Option<i64>,
     /// Size of the serialized (CDR) payload.
     pub size_bytes: usize,
     /// The decoded message, or `null` when omitted (see `omitted`).
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<Object>))]
     pub data: Option<serde_json::Value>,
     /// Why `data` is null, if it is.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -31,6 +35,7 @@ pub struct Sample {
 }
 
 /// Why a sample's `data` is `null`.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OmittedReason {

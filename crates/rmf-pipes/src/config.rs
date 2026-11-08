@@ -104,6 +104,24 @@ pub struct Config {
     #[arg(long, env = "RMF_PIPES_MAX_PAYLOAD_BYTES", hide_env_values = true, default_value_t = 1024 * 1024)]
     pub max_payload_bytes: usize,
 
+    /// Most topics subscribed on demand at once (standing topics don't count).
+    #[arg(
+        long,
+        env = "RMF_PIPES_MAX_TOPICS",
+        hide_env_values = true,
+        default_value_t = 256
+    )]
+    pub max_topics: usize,
+
+    /// Most concurrent SSE streams.
+    #[arg(
+        long,
+        env = "RMF_PIPES_MAX_STREAMS",
+        hide_env_values = true,
+        default_value_t = 256
+    )]
+    pub max_streams: usize,
+
     /// How long to wait for a publisher's type description when subscribing.
     #[arg(long, env = "RMF_PIPES_DISCOVERY_TIMEOUT", hide_env_values = true, value_parser = humantime::parse_duration, default_value = "5s")]
     pub discovery_timeout: Duration,
@@ -159,6 +177,7 @@ impl Config {
             idle_timeout: self.idle_timeout,
             max_rate_hz: (self.max_rate_hz > 0.0).then_some(self.max_rate_hz),
             max_payload_bytes: self.max_payload_bytes,
+            max_on_demand_topics: self.max_topics,
             ..pipes_core::hub::HubConfig::default()
         }
     }
@@ -253,7 +272,7 @@ mod tests {
         let mut checked = 0;
         check(&Config::command(), &mut checked);
         assert!(
-            checked >= 14,
+            checked >= 16,
             "expected env-backed arguments, checked {checked}"
         );
     }

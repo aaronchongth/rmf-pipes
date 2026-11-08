@@ -27,6 +27,7 @@ pub struct FakeBus {
 struct State {
     graph: GraphSnapshot,
     failures: HashMap<String, BusError>,
+    hangs: std::collections::HashSet<String>,
     subscribers: HashMap<String, Vec<mpsc::UnboundedSender<RawSample>>>,
     subscribe_calls: HashMap<String, usize>,
 }
@@ -72,9 +73,17 @@ impl FakeBus {
         self.lock().failures.insert(topic.to_owned(), err);
     }
 
-    /// Undo [`FakeBus::fail_subscribe`].
+    /// Make subscribing to `topic` never complete (schema discovery that
+    /// hangs), until [`FakeBus::clear_failure`].
+    pub fn hang_subscribe(&self, topic: &str) {
+        self.lock().hangs.insert(topic.to_owned());
+    }
+
+    /// Undo [`FakeBus::fail_subscribe`] and [`FakeBus::hang_subscribe`].
     pub fn clear_failure(&self, topic: &str) {
-        self.lock().failures.remove(topic);
+        let mut st = self.lock();
+        st.hangs.remove(topic);
+        st.failures.remove(topic);
     }
 
     /// Deliver a sample that decodes to `data` to every live subscription of
@@ -144,8 +153,15 @@ impl Bus for FakeBus {
     }
 
     async fn subscribe(&self, topic: &str) -> Result<Subscription, BusError> {
+        let hang = {
+            let mut st = self.lock();
+            *st.subscribe_calls.entry(topic.to_owned()).or_default() += 1;
+            st.hangs.contains(topic)
+        };
+        if hang {
+            std::future::pending::<()>().await;
+        }
         let mut st = self.lock();
-        *st.subscribe_calls.entry(topic.to_owned()).or_default() += 1;
         if let Some(err) = st.failures.get(topic) {
             return Err(err.clone());
         }

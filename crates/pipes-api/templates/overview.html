@@ -1,0 +1,26 @@
+<div class="cards">
+  <div class="card"><div class="n">{{ nodes }}</div><div class="l">nodes</div></div>
+  <div class="card"><div class="n">{{ topics.len() }}</div><div class="l">topics</div></div>
+  <div class="card"><div class="n">{{ services }}</div><div class="l">services</div></div>
+  <div class="card"><div class="n">{{ active }}</div><div class="l">subscribed</div></div>
+  <div class="card"><div class="n {% if mismatches > 0 %}bad{% endif %}">{{ mismatches }}</div><div class="l">type mismatches</div></div>
+</div>
+<div class="scroll">
+<table>
+  <thead><tr><th>Topic</th><th>Type</th><th class="num">Pub</th><th class="num">Sub</th><th>rmf-pipes</th></tr></thead>
+  <tbody>
+  {% for t in topics %}
+    <tr>
+      <td>{% if t.linkable %}<a href="/ui/topic?name={{ t.name|urlencode_strict }}"><code>{{ t.name }}</code></a>{% else %}<code>{{ t.name }}</code> <span class="warn">(not a valid ROS name)</span>{% endif %}</td>
+      <td>{% for ty in t.types %}<code>{{ ty.type_name }}</code>{% if t.mismatch %} <span class="bad">{{ ty.short_hash }}</span>{% endif %}<br>{% endfor %}
+        {% if t.mismatch %}<span class="bad">type mismatch</span>{% endif %}</td>
+      <td class="num">{{ t.publishers }}</td>
+      <td class="num">{{ t.subscriptions }}</td>
+      <td>{{ t.state }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="5" class="muted">No topics yet. Is the zenoh router reachable, and is anything publishing?</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>

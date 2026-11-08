@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} · rmf-pipes{% endblock %}
+{% block content %}
+<h2><code>{{ name }}</code></h2>
+<div id="info" hx-get="/ui/fragments/topic?name={{ name|urlencode_strict }}" hx-trigger="load, every 2s" hx-swap="innerHTML"></div>
+<h2>Latest sample <span id="status" class="muted">connecting…</span></h2>
+<pre id="sample" class="muted">Waiting for a sample…</pre>
+<h2>Schema</h2>
+<pre id="schema" class="muted">Waiting for the publisher's type description…</pre>
+<script id="topic-page" data-topic="{{ name }}">
+(function () {
+  var topic = document.getElementById("topic-page").dataset.topic;
+  var q = "?name=" + encodeURIComponent(topic);
+  var statusEl = document.getElementById("status");
+  var sampleEl = document.getElementById("sample");
+  var schemaEl = document.getElementById("schema");
+  var lagEl = document.createElement("span");
+  lagEl.className = "warn";
+  statusEl.after(lagEl);
+  // Type hash the shown schema belongs to; null until one is shown. A new
+  // hash (the publisher restarted with a new definition) reloads it.
+  var schemaHash = null;
+  var schemaLoading = false;
+  function loadSchema(hash) {
+    if (schemaLoading || (schemaHash !== null && schemaHash === hash)) return;
+    schemaLoading = true;
+    fetch("/api/v1/topic/schema" + q + "&wait_ms=5000").then(function (r) {
+      return r.json().then(function (body) { return { ok: r.ok, body: body }; });
+    }).then(function (res) {
+      if (res.ok) { schemaHash = hash; schemaEl.classList.remove("muted"); }
+      schemaEl.textContent = res.ok ? JSON.stringify(res.body, null, 2) : res.body.message;
+    }).catch(function () {}).then(function () { schemaLoading = false; });
+  }
+  var es = new EventSource("/api/v1/topic/stream" + q);
+  es.addEventListener("status", function (e) {
+    var st = JSON.parse(e.data);
+    statusEl.textContent = st.state === "failed" ? "failed: " + st.error : st.state;
+    statusEl.className = st.state === "active" ? "good" : st.state === "failed" ? "bad" : "muted";
+    lagEl.textContent = "";
+    if (st.state === "opening") schemaHash = null;
+    // A silent topic still has a schema once active; the first sample then
+    // pins it to its real hash.
+    if (st.state === "active" && schemaHash === null) loadSchema("(active)");
+    if (st.state === "closed") { es.close(); statusEl.className = "warn"; statusEl.textContent = "closed (reload to reconnect)"; }
+  });
+  es.addEventListener("sample", function (e) {
+    var s = JSON.parse(e.data);
+    sampleEl.classList.remove("muted");
+    sampleEl.textContent = JSON.stringify(s, null, 2);
+    // Retries a failed fetch too: until a schema for this hash is shown,
+    // every sample tries again (at most one request in flight).
+    loadSchema(s.type_hash);
+  });
+  es.addEventListener("lagged", function (e) {
+    lagEl.textContent = " (skipped " + JSON.parse(e.data).skipped + " samples while catching up)";
+  });
+  es.onerror = function () {
+    if (es.readyState === EventSource.CLOSED) return;
+    statusEl.textContent = "disconnected; retrying…"; statusEl.className = "warn";
+  };
+})();
+</script>
+{% endblock %}

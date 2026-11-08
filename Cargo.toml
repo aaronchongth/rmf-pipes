@@ -33,7 +33,13 @@ futures = "0.3"
 async-trait = "0.1"
 
 # HTTP
+askama = "0.16"
 axum = "0.8"
+utoipa = { version = "6", features = ["time", "preserve_order", "preserve_path_order"] }
+utoipa-axum = "0.3"
+# `vendored` bundles Swagger UI from crates.io instead of downloading it at
+# build time, so offline (`cargo vendor`) builds work.
+utoipa-swagger-ui = { version = "10", default-features = false, features = ["axum", "vendored"] }
 tower = "0.5"
 tower-http = { version = "0.7", features = ["trace", "timeout", "limit"] }
 
@@ -55,6 +61,7 @@ anyhow = "1"
 
 # Testing
 reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+http-body-util = "0.1"
 insta = { version = "1", features = ["json"] }
 
 [workspace.lints.rust]

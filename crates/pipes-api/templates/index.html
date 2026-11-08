@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="overview" hx-get="/ui/fragments/overview" hx-trigger="load, every 2s" hx-swap="innerHTML">
+  <p class="muted">Loading the graph…</p>
+</div>
+{% endblock %}

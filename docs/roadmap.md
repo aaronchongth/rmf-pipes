@@ -26,7 +26,7 @@ Status: ✅ done · 🚧 in progress · 📋 planned. Each phase ends with `pixi
   - hermetic tests through an in-process router, covering every hiroz `FieldType` and transient_local late join
   - `pixi run interop` passes against real `rmw_zenoh_cpp`
 
-## Phase 2: API, OpenAPI and dashboard 📋
+## Phase 2: API, OpenAPI and dashboard ✅
 - REST: graph, topics, latest, schema. SSE: live samples, lag notices, ends on shutdown.
 - utoipa OpenAPI at `/openapi.json`, with a vendored Swagger UI at `/docs`
 - Server-rendered dashboard (askama + vendored htmx): overview, graph, topic live view, mismatches

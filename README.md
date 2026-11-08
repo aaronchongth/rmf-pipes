@@ -16,6 +16,28 @@ curl -s localhost:18080/healthz
 ```
 You need Rust via [rustup](https://rustup.rs); `rust-toolchain.toml` pins the version. [pixi](https://pixi.sh) is only a task runner here, so every task is a plain `cargo` command in `pixi.toml`.
 
+## API
+- `GET /api/v1/graph`: nodes, topics (with type hashes), services, type mismatches
+- `GET /api/v1/topics`: what rmf-pipes is subscribed to, with stats
+- `GET /api/v1/topic?name=/chatter`: one topic's graph summary and subscription state
+- `GET /api/v1/topic/latest?name=/chatter`: latest sample, subscribing on demand
+- `GET /api/v1/topic/schema?name=/chatter`: the message definition
+- `GET /api/v1/topic/stream?name=/chatter`: live samples as server-sent events
+- `GET /openapi.json`, `GET /docs/`: the OpenAPI description and Swagger UI
+- `GET /`: the introspection dashboard. `GET /metrics`: Prometheus metrics.
+
+Payloads follow [docs/json-mapping.md](docs/json-mapping.md), and all options are in [docs/configuration.md](docs/configuration.md).
+
+Try it against a local ROS 2 system on rmw_zenoh:
+```
+source /opt/ros/lyrical/setup.bash
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp
+ros2 run rmw_zenoh_cpp rmw_zenohd &
+ros2 topic pub /chatter std_msgs/msg/String "{data: hi}" &
+pixi run run -- --ingest '**'     # then open http://127.0.0.1:18080/
+```
+`--ingest '**'` subscribes to everything that has a publisher, which is fine for a demo. On a real site, list the topics you need.
+
 ## Offline / air-gapped builds
 `--locked` still needs the crates.io index. For a site with no network:
 1. run `cargo vendor` on a connected machine

@@ -24,7 +24,7 @@ Browser / scripts ──HTTP──► rmf-pipes only
 |---|---|---|
 | `pipes-core` | ✅ data model (graph, samples, schema), `Bus` trait + `FakeBus`, topic hub, pattern matching, metrics | **No** |
 | `pipes-bus` | ✅ distro guard, `HirozBus`: session, graph snapshots, dynamic subscriptions, CDR → JSON mapping | Yes (the only one) |
-| `pipes-api` | ✅ `/healthz`, `/metrics`, `serve` with drain deadline · 📋 REST, SSE, OpenAPI, dashboard | **No** |
+| `pipes-api` | ✅ REST + SSE under `/api/v1`, OpenAPI (`/openapi.json`, Swagger UI at `/docs/`), dashboard (`/`, `/ui/*`), `/healthz`, `/metrics`, `serve` with drain deadline | **No** |
 | `pipes-testkit` | ✅ in-process zenoh router, hiroz fixture nodes, hermetic bus tests, interop tests (`rmw_zenohd` + `ros2`) | Yes (tests only) |
 | `rmf-pipes` | ✅ binary: config, logging, signals, wiring | No (goes through `pipes-bus`) |
 
@@ -32,7 +32,7 @@ Browser / scripts ──HTTP──► rmf-pipes only
 
 Dependency direction: `rmf-pipes → {pipes-api, pipes-bus} → pipes-core`. `pipes-api` gets the bus as `Arc<dyn Bus>`, so API tests use a fake bus.
 
-## Data flow (✅ phase 1 · 📋 HTTP in phase 2)
+## Data flow
 
 1. **Graph.** `pipes-bus` reads hiroz's liveliness graph (nodes, topics, services, plus each endpoint's type name, RIHS01 hash and QoS) and turns it into `pipes-core` graph types. `pipes-core` flags **type mismatches**, meaning a topic seen with more than one (type, hash) pair. rmw_zenoh silently drops traffic in that case, so we surface it loudly in logs, the API and the metrics.
 2. **Subscriptions.** There are two kinds:
@@ -50,7 +50,17 @@ Dependency direction: `rmf-pipes → {pipes-api, pipes-bus} → pipes-core`. `pi
    - Each subscription task has a generation number, so a task replaced by a resubscribe can't write stale state.
 4. **Decoding.** CDR → hiroz `DynamicMessage` → JSON, following `json-mapping.md`.
 5. **Hub.** `pipes-core` keeps the latest sample and stats per topic, and fans out to watchers over a bounded broadcast channel. A slow watcher skips ahead (and, in phase 2's SSE, gets a `lagged` event) instead of blocking anyone.
-6. **HTTP.** REST for the graph, topics, latest values and schemas; SSE for live samples; `/metrics` in Prometheus format; a server-rendered dashboard.
+6. **HTTP** (`pipes-api`).
+   - **REST**: `/api/v1/graph`, `/api/v1/topics`, `/api/v1/topic`, `/api/v1/topic/latest`, `/api/v1/topic/schema`.
+     - `latest` and `schema` subscribe on demand and wait up to `wait_ms` (capped at 10s). A topic with no publisher is `404`; one that already failed is `503` at once.
+     - Every error, including bad query strings, unknown paths and non-GET methods, is JSON `{error, message}` with a stable code (listed on `ApiError` in the OpenAPI document).
+   - **SSE**: `/api/v1/topic/stream` sends `status`, `sample` and `lagged` events. It always ends with a final `status: closed`, whether the topic was closed or the server is shutting down. A client disconnect releases its watch at once.
+   - **Limits**: at most `--max-topics` on-demand topics and `--max-streams` SSE streams, then `503`. The trace layer logs 5xx at DEBUG, since they are expected outcomes such as a client's `wait_ms` running out.
+   - **OpenAPI**: `/api`, `/healthz` and `/metrics` routes are registered only through utoipa-axum's `OpenApiRouter` in `api.rs` (`pixi run invariants` rejects a plain `.route("/api…")`), so they can't exist undocumented. Swagger UI is vendored, and its online validator badge is disabled, so `/docs/` never contacts the internet.
+   - **Dashboard**: askama templates, refreshed every 2s by vendored htmx, plus a small inline script for the live SSE view.
+     - It loads no external resources: a test scans every page, inline JS included, for network locations.
+     - Topic names from the graph are always HTML-escaped. Names that aren't valid ROS names are shown but not linked.
+   - **Metrics**: `/metrics` in Prometheus format.
 
 ## Shutdown
 SIGINT or SIGTERM cancels a `CancellationToken`.

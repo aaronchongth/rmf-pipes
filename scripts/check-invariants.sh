@@ -4,7 +4,9 @@
 #   2. hiroz ends up with exactly one ROS distro feature, counting every crate
 #      and dev-dependency in the build (pipes-bus's guard only sees its own);
 #   3. every workspace crate builds and its tests compile on their own (no
-#      reliance on feature unification from sibling crates).
+#      reliance on feature unification from sibling crates);
+#   4. API routes are only registered through the OpenAPI router in
+#      pipes-api/src/api.rs (`routes!(...)`), so none can exist undocumented.
 # Run via `pixi run invariants`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -34,4 +36,10 @@ for crate in $(cargo metadata --locked --no-deps --format-version 1 \
   echo "== ${crate} tests compile on their own"
   cargo test --locked -p "${crate}" --no-run --quiet
 done
+echo "== /api and ops routes are only registered via utoipa's OpenApiRouter"
+if grep -rnE '\.route\(\s*"/(api|healthz|metrics)' crates/pipes-api/src; then
+  echo "ERROR: register API routes with routes!(...) in api.rs so they appear in /openapi.json" >&2
+  exit 1
+fi
+
 echo "ok: dependency invariants hold"

@@ -1,0 +1,15 @@
+<dl>
+  {% match graph %}{% when Some with (g) %}
+    <dt>Types</dt><dd>{% for ty in g.types %}<code>{{ ty.type_name }}</code> <span class="muted">{{ ty.type_hash }}</span> ({{ ty.publishers }} pub, {{ ty.subscriptions }} sub)<br>{% endfor %}
+      {% if g.mismatch %}<span class="bad">Type mismatch: these endpoints use different message definitions and will not see each other's data.</span>{% endif %}</dd>
+  {% when None %}
+    <dt>Graph</dt><dd class="muted">No endpoints right now.</dd>
+  {% endmatch %}
+  {% for ep in publishers %}
+    <dt>Publisher</dt><dd><code>{{ ep.node }}</code> · {{ ep.qos }}</dd>
+  {% endfor %}
+  {% match subscription %}{% when Some with (s) %}
+    <dt>Received</dt><dd>{{ s.stats.received }} ({{ s.stats.delivered }} delivered, {{ s.stats.dropped_rate_limited }} rate-limited, {{ s.stats.omitted_too_large }} too large, {{ s.stats.decode_errors }} decode errors)</dd>
+    <dt>Watchers</dt><dd>{{ s.watchers }}{% if s.standing %} · standing (matches an ingest pattern){% endif %}</dd>
+  {% when None %}{% endmatch %}
+</dl>

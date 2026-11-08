@@ -27,6 +27,7 @@ fn cfg() -> HubConfig {
         max_rate_hz: None,
         max_payload_bytes: 1024,
         watcher_buffer: 16,
+        max_on_demand_topics: 3,
     }
 }
 
@@ -605,4 +606,53 @@ async fn tick_after_close_all_opens_nothing() {
     settle().await;
     assert!(hub.topics().is_empty());
     assert_eq!(bus.subscribe_calls("/fleet/r1/state"), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn on_demand_topics_are_capped_but_existing_and_standing_ones_are_not() {
+    let bus = FakeBus::new();
+    for t in ["/a", "/b", "/c", "/d", "/fleet/s"] {
+        bus.add_publisher(t, TY, H1);
+    }
+    let hub = hub(
+        &bus,
+        HubConfig {
+            patterns: vec![TopicPattern::parse("fleet/*").unwrap()],
+            ..cfg()
+        },
+    );
+    hub.tick(); // opens the standing /fleet/s, which doesn't count
+    let _w: Vec<Watch> = ["/a", "/b", "/c"]
+        .iter()
+        .map(|t| hub.watch(t).unwrap())
+        .collect();
+    assert_eq!(hub.watch("/d").unwrap_err(), HubError::TooManyTopics(3));
+    assert!(
+        hub.watch("/a").is_ok(),
+        "an already open topic can always be watched again"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn watch_snapshot_and_events_do_not_overlap() {
+    let bus = FakeBus::new();
+    bus.add_publisher("/chatter", TY, H1);
+    let hub = hub(&bus, cfg());
+    let first = hub.watch("/chatter").unwrap();
+    until("active", || {
+        status(&hub, "/chatter") == Some(TopicStatus::Active)
+    })
+    .await;
+    bus.publish("/chatter", json!({"data": 1}));
+    until("delivered", || hub.latest("/chatter").is_some()).await;
+    let mut w = hub.watch("/chatter").unwrap();
+    assert_eq!(w.initial_status, TopicStatus::Active);
+    assert_eq!(
+        w.initial_latest.as_ref().unwrap().data,
+        Some(json!({"data": 1}))
+    );
+    // The snapshot's sample must not be delivered again as an event.
+    bus.publish("/chatter", json!({"data": 2}));
+    assert_eq!(next_sample(&mut w).await.data, Some(json!({"data": 2})));
+    drop(first);
 }

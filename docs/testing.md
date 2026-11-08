@@ -2,14 +2,15 @@
 
 The goal is that **an agent can verify any change with one command, without ROS or docker.**
 
-Status: ✅ in place · 📋 arrives in phase 2.
+Status: ✅ in place.
 
 | Level | What | Where | Command | Needs |
 |---|---|---|---|---|
 | ✅ L0 static | rustfmt, clippy `-D warnings`, `missing_docs`, dependency invariants, build of every distro feature, distro guard | whole workspace | `pixi run ci` | Rust |
 | ✅ L1 unit | pure logic: config, serve/drain, JSON mapping (every hiroz `FieldType`, through CDR), type-description conversion (every ROS type id), subscription QoS and publisher choice, pattern matching, graph summaries, hub lifecycle against `FakeBus` with paused time | `#[cfg(test)]` in each crate | `pixi run test` | Rust |
 | ✅ L2 bus (hermetic) | typed hiroz publishers → in-process zenoh router → `HirozBus` (and the hub): graph, decoding, transient_local late join, mismatches, errors, binding to an advertised hash hiroz wouldn't compute | `crates/pipes-testkit/tests/bus.rs` | `pixi run test` | Rust |
-| ✅ L3 e2e (hermetic) | real `rmf-pipes` binary + in-process router over HTTP: `/healthz`, `/metrics`, SIGTERM, fail-fast without a router; 📋 SSE + sample flow | `crates/rmf-pipes/tests/` | `pixi run test` | Rust |
+| ✅ L3 API (in-process) | every route and error path against `FakeBus` (`invalid_query`, `invalid_topic`, `no_publisher`, `topic_failed`, `no_sample`, `no_schema`, `too_many_*`, 405); SSE framing, lag, keep-alive, latest-first, final `closed` on shutdown and on topic close, watch released on disconnect; OpenAPI lists every route, every documented path is routed, Swagger validator off; dashboard pages with no external URLs, hostile names escaped | `crates/pipes-api/src/api_tests.rs` | `pixi run test` | Rust |
+| ✅ L3 e2e (hermetic) | real `rmf-pipes` binary + in-process router + hiroz publisher, HTTP only: `/healthz`, `/metrics`, SIGTERM (idle, and with an SSE client connected), fail-fast without a router, graph, latest, schema, SSE with increasing sequence numbers, standing patterns, docs, dashboard | `crates/rmf-pipes/tests/` | `pixi run test` | Rust |
 | ✅ L4 interop | `ros2 topic pub` (rclpy) on `rmw_zenoh_cpp` via a real `rmw_zenohd` → `HirozBus`: hashes, nested, `uint8[]`, int64, `byte`, `string<=N`, transient_local late join | `crates/pipes-testkit/tests/interop.rs` (`#[ignore]`) | `pixi run interop` | `/opt/ros/$ROS_DISTRO` with rmw_zenoh |
 
 ## Rules

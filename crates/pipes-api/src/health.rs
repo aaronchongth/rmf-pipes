@@ -3,13 +3,14 @@
 //! Rule carried over from rmf-console: health responses never include raw error
 //! text from dependencies. Details go to the log; the response stays generic.
 
-use axum::{Json, Router, extract::State, routing::get};
+use axum::{Json, extract::State};
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::AppState;
 
 /// Body of `GET /healthz`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct Health {
     /// Always `"ok"` while the process can serve HTTP.
     pub status: &'static str,
@@ -19,12 +20,10 @@ pub struct Health {
     pub ros_distro: &'static str,
 }
 
-/// Routes for liveness checks.
-pub fn routes() -> Router<AppState> {
-    Router::new().route("/healthz", get(healthz))
-}
-
-async fn healthz(State(state): State<AppState>) -> Json<Health> {
+/// Liveness. rmf-pipes only starts serving after it has joined zenoh.
+#[utoipa::path(get, path = "/healthz", tag = "ops",
+    responses((status = 200, description = "The process is up", body = Health)))]
+pub async fn healthz(State(state): State<AppState>) -> Json<Health> {
     let build = state.build();
     Json(Health {
         status: "ok",

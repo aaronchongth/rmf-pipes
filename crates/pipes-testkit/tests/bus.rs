@@ -239,7 +239,7 @@ async fn mismatched_types_on_one_topic_are_flagged() {
         let t = bus.graph().topic("/status");
         async move {
             match t {
-                Some(t) if t.publishers() == 2 => Ok(t),
+                Some(t) if t.publishers == 2 => Ok(t),
                 other => Err(format!("{other:?}")),
             }
         }

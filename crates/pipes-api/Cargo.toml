@@ -7,20 +7,25 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-pipes-core.workspace = true
+pipes-core = { workspace = true, features = ["openapi"] }
+askama.workspace = true
 axum.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tower-http.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tracing.workspace = true
+utoipa.workspace = true
+utoipa-axum.workspace = true
+utoipa-swagger-ui.workspace = true
 
 [dev-dependencies]
-pipes-core = { workspace = true, features = ["fake"] }
-tokio = { workspace = true, features = ["io-util"] }
+pipes-core = { workspace = true, features = ["fake", "openapi"] }
+http-body-util.workspace = true
+tokio = { workspace = true, features = ["io-util", "test-util"] }
 tower.workspace = true
-http-body-util = "0.1"
 
 [lints]
 workspace = true

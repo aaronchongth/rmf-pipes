@@ -1,6 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use pipes_core::{build_info::BuildInfo, hub::Hub};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
 /// Renders the process's metrics in Prometheus text format. Injected so the API
@@ -18,7 +19,11 @@ struct Inner {
     hub: Hub,
     metrics: MetricsRender,
     shutdown: CancellationToken,
+    streams: Arc<Semaphore>,
 }
+
+/// Default for [`AppState::with_max_streams`].
+pub const DEFAULT_MAX_STREAMS: usize = 256;
 
 impl fmt::Debug for AppState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -43,8 +48,30 @@ impl AppState {
                 hub,
                 metrics,
                 shutdown,
+                streams: Arc::new(Semaphore::new(DEFAULT_MAX_STREAMS)),
             }),
         }
+    }
+
+    /// Cap concurrent SSE streams at `max` (default [`DEFAULT_MAX_STREAMS`]).
+    #[must_use]
+    pub fn with_max_streams(self, max: usize) -> Self {
+        let inner = Inner {
+            build: self.inner.build.clone(),
+            hub: self.inner.hub.clone(),
+            metrics: self.inner.metrics.clone(),
+            shutdown: self.inner.shutdown.clone(),
+            streams: Arc::new(Semaphore::new(max)),
+        };
+        Self {
+            inner: Arc::new(inner),
+        }
+    }
+
+    /// A slot for one SSE stream, held for the stream's lifetime, or `None`
+    /// when the cap is reached.
+    pub fn stream_permit(&self) -> Option<OwnedSemaphorePermit> {
+        self.inner.streams.clone().try_acquire_owned().ok()
     }
 
     /// Facts about the running build.

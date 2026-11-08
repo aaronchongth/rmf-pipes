@@ -87,6 +87,9 @@ pub struct HubConfig {
     /// Per-topic event buffer for each watcher; a watcher that falls further
     /// behind than this gets a lag notice instead of the missed events.
     pub watcher_buffer: usize,
+    /// Most on-demand (non-standing) topics open at once. Further watches of
+    /// new topics are refused with [`HubError::TooManyTopics`].
+    pub max_on_demand_topics: usize,
 }
 
 impl Default for HubConfig {
@@ -100,6 +103,7 @@ impl Default for HubConfig {
             max_rate_hz: Some(20.0),
             max_payload_bytes: 1024 * 1024,
             watcher_buffer: 64,
+            max_on_demand_topics: 256,
         }
     }
 }
@@ -126,6 +130,7 @@ impl HubConfig {
 }
 
 /// Where a topic's subscription is in its lifecycle.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TopicStatus {
@@ -144,6 +149,7 @@ pub enum TopicStatus {
 }
 
 /// What a topic's subscription is bound to.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SubscriptionInfo {
     /// ROS type name.
@@ -153,6 +159,7 @@ pub struct SubscriptionInfo {
 }
 
 /// Counters for one topic since its entry was created.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TopicStats {
     /// Samples received from the bus.
@@ -170,6 +177,7 @@ pub struct TopicStats {
     pub last_decode_error: Option<String>,
     /// When the last sample arrived.
     #[serde(with = "time::serde::rfc3339::option")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = DateTime))]
     pub last_received_at: Option<OffsetDateTime>,
 }
 
@@ -183,6 +191,7 @@ pub enum TopicEvent {
 }
 
 /// A read-only view of one topic entry.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Serialize)]
 pub struct TopicView {
     /// Topic name.
@@ -210,6 +219,9 @@ pub enum HubError {
     /// The hub is closing; no new watches.
     #[error("rmf-pipes is shutting down")]
     ShuttingDown,
+    /// `max_on_demand_topics` on-demand topics are already open.
+    #[error("too many topics are open on demand (limit {0}); try again when some go idle")]
+    TooManyTopics(usize),
 }
 
 /// Cheap-to-clone handle to the hub.
@@ -297,9 +309,19 @@ impl Shared {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Subscribe to events, unless the entry is closed.
-    fn subscribe(&self) -> Option<broadcast::Receiver<TopicEvent>> {
-        self.lock().tx.as_ref().map(broadcast::Sender::subscribe)
+    /// Subscribe to events, with a snapshot taken under the same lock that
+    /// every event is sent under, unless the entry is closed.
+    #[allow(clippy::type_complexity)]
+    fn subscribe(
+        &self,
+    ) -> Option<(
+        broadcast::Receiver<TopicEvent>,
+        TopicStatus,
+        Option<Arc<Sample>>,
+    )> {
+        let st = self.lock();
+        let rx = st.tx.as_ref()?.subscribe();
+        Some((rx, st.status.clone(), st.latest.clone()))
     }
 
     /// Begin a new generation in `Opening`; returns its number.
@@ -359,9 +381,15 @@ impl Shared {
 /// A live interest in one topic. Dropping it releases the interest.
 #[derive(Debug)]
 pub struct Watch {
-    /// Status changes and samples, in order. Lagging receivers get
+    /// Status changes and samples after [`Watch::initial_status`] and
+    /// [`Watch::initial_latest`], in order. Lagging receivers get
     /// `RecvError::Lagged` and skip ahead.
     pub events: broadcast::Receiver<TopicEvent>,
+    /// Status when the watch started, consistent with `events`: no event is
+    /// both reflected here and delivered on `events`.
+    pub initial_status: TopicStatus,
+    /// Latest sample when the watch started, consistent with `events`.
+    pub initial_latest: Option<Arc<Sample>>,
     shared: Arc<Shared>,
     _guard: WatchGuard,
 }
@@ -468,15 +496,24 @@ impl Hub {
         if self.inner.shutdown.is_cancelled() {
             return Err(HubError::ShuttingDown);
         }
+        if !topics.contains_key(topic) {
+            let cap = self.inner.cfg.max_on_demand_topics;
+            if topics.values().filter(|e| !e.standing).count() >= cap {
+                return Err(HubError::TooManyTopics(cap));
+            }
+        }
         let entry = topics
             .entry(topic.to_owned())
             .or_insert_with(|| self.inner.new_entry(topic, false));
         entry.watchers += 1;
         entry.idle_since = None;
         let shared = entry.shared.clone();
-        let events = shared.subscribe().ok_or(HubError::ShuttingDown)?;
+        let (events, initial_status, initial_latest) =
+            shared.subscribe().ok_or(HubError::ShuttingDown)?;
         Ok(Watch {
             events,
+            initial_status,
+            initial_latest,
             shared,
             _guard: WatchGuard {
                 inner: Arc::downgrade(&self.inner),
@@ -625,7 +662,7 @@ impl Inner {
 
         // Standing patterns: topics with at least one publisher.
         for t in &summaries {
-            if t.publishers() > 0 && any_match(&self.cfg.patterns, &t.name) {
+            if t.publishers > 0 && any_match(&self.cfg.patterns, &t.name) {
                 let entry = topics
                     .entry(t.name.clone())
                     .or_insert_with(|| self.new_entry(&t.name, true));

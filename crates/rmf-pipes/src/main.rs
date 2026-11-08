@@ -65,7 +65,8 @@ async fn main() -> anyhow::Result<()> {
         hub,
         Arc::new(move || metrics.render()),
         shutdown.clone(),
-    );
+    )
+    .with_max_streams(config.max_streams);
     let outcome = pipes_api::serve::serve(
         listener,
         pipes_api::router(state),

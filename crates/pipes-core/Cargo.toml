@@ -9,6 +9,8 @@ license.workspace = true
 [features]
 # Exposes `fake::FakeBus` to other crates' tests.
 fake = ["dep:tokio-stream"]
+# Derives utoipa schemas for the public data model (used by pipes-api).
+openapi = ["dep:utoipa"]
 
 [dependencies]
 async-trait.workspace = true
@@ -22,6 +24,7 @@ tokio.workspace = true
 tokio-stream = { workspace = true, optional = true }
 tokio-util.workspace = true
 tracing.workspace = true
+utoipa = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

@@ -169,3 +169,50 @@ pub fn init_logging() {
         .with_test_writer()
         .try_init();
 }
+
+/// A `std_msgs/String` fixture publisher running in the background. Stops when
+/// dropped.
+pub struct StringPublisher {
+    task: tokio::task::JoinHandle<()>,
+    _ctx: hiroz::context::ZContext,
+}
+
+impl std::fmt::Debug for StringPublisher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StringPublisher").finish_non_exhaustive()
+    }
+}
+
+impl Drop for StringPublisher {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Publish `message(i)` on `topic` every `period` from a fixture node called
+/// `node_name`, for crates that must not depend on hiroz themselves (the
+/// binary's end-to-end tests). Needs a tokio runtime.
+pub fn spawn_string_publisher(
+    router_endpoint: &str,
+    node_name: &str,
+    topic: &str,
+    period: Duration,
+    message: impl Fn(u64) -> String + Send + 'static,
+) -> StringPublisher {
+    use hiroz_msgs::std_msgs::String as RosString;
+    let (ctx, node) = fixture_node(router_endpoint, node_name);
+    let publisher = node
+        .create_pub::<RosString>(topic)
+        .build()
+        .expect("fixture publisher");
+    let task = tokio::spawn(async move {
+        let _node = node;
+        let mut i = 0u64;
+        loop {
+            let _ = publisher.publish(&RosString { data: message(i) });
+            i += 1;
+            tokio::time::sleep(period).await;
+        }
+    });
+    StringPublisher { task, _ctx: ctx }
+}

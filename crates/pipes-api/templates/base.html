@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}rmf-pipes{% endblock %}</title>
+<style>
+  :root { --bg: #fafafa; --fg: #1d1d1f; --muted: #6b6b70; --line: #e2e2e6; --card: #fff; --bad: #b3261e; --good: #1e7b34; --warn: #8a5a00; --link: #0b57d0; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #141416; --fg: #ececf0; --muted: #9a9aa2; --line: #2c2c31; --card: #1c1c20; --bad: #ff8a80; --good: #7ad19a; --warn: #f0c060; --link: #8ab4f8; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0 16px 32px; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--fg); }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; padding: 16px 0; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: var(--muted); }
+  header nav { margin-left: auto; display: flex; gap: 12px; }
+  a { color: var(--link); text-decoration: none; } a:hover { text-decoration: underline; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; }
+  .card .n { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .card .l { color: var(--muted); }
+  .bad { color: var(--bad); } .good { color: var(--good); } .warn { color: var(--warn); } .muted { color: var(--muted); }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  code, pre { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  pre { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 0; }
+  h2 { font-size: 15px; margin: 20px 0 8px; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; word-break: break-all; }
+</style>
+<script src="/ui/assets/htmx-2.0.11.min.js"></script>
+</head>
+<body>
+<header>
+  <h1><a href="/">rmf-pipes</a></h1>
+  <span class="meta">v{{ version }} · ROS {{ ros_distro }}</span>
+  <nav><a href="/">Graph</a><a href="/docs/">API docs</a><a href="/metrics">Metrics</a></nav>
+</header>
+{% block content %}{% endblock %}
+</body>
+</html>
