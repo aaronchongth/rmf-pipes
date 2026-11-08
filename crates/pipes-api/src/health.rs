@@ -37,14 +37,13 @@ async fn healthz(State(state): State<AppState>) -> Json<Health> {
 mod tests {
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt;
-    use pipes_core::build_info::BuildInfo;
     use tower::ServiceExt;
 
-    use crate::{AppState, router};
+    use crate::{router, test_support::state};
 
     #[tokio::test]
     async fn healthz_reports_version_and_distro() {
-        let app = router(AppState::new(BuildInfo::new("testdistro")));
+        let app = router(state());
         let res = app
             .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
             .await

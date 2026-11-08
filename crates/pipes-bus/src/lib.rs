@@ -5,4 +5,10 @@
 //! `pipes-core`, which keeps hiroz upgrades contained and lets the API be tested
 //! without a zenoh session.
 
+mod bus;
+mod convert;
 pub mod distro;
+pub mod json;
+mod type_desc;
+
+pub use bus::{BusConfig, ConnectError, HirozBus};

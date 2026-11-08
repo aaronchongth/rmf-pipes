@@ -14,7 +14,7 @@ Status: ✅ done · 🚧 in progress · 📋 planned. Each phase ends with `pixi
   - drain-deadline shutdown (non-vacuous test, mutation-checked)
 - Agent and design docs
 
-## Phase 1: Live data plane (read-only, no auth, binds to localhost by default) 📋
+## Phase 1: Live data plane (read-only, no auth, binds to localhost by default) ✅
 - `Bus` trait in `pipes-core`, with a hiroz implementation in `pipes-bus`
 - Graph snapshots with type hashes and QoS, plus type-mismatch detection
 - Runtime schema discovery and dynamic decoding, with the JSON mapping (`json-mapping.md`)

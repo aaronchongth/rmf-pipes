@@ -6,10 +6,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+# Exposes `fake::FakeBus` to other crates' tests.
+fake = ["dep:tokio-stream"]
+
 [dependencies]
+async-trait.workspace = true
+futures.workspace = true
+metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tokio-stream = { workspace = true, optional = true }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tokio-stream.workspace = true
 
 [lints]
 workspace = true

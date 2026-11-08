@@ -7,6 +7,8 @@ cd "$(dirname "$0")/.."
 for distro in jazzy kilted lyrical rolling; do
   echo "== cargo check --features ${distro}"
   cargo check --locked -p rmf-pipes --no-default-features --features "${distro}" --quiet
+  echo "== tests of rmf-pipes and pipes-testkit compile for ${distro}"
+  cargo test --locked -p rmf-pipes -p pipes-testkit --no-default-features --features "${distro}" --no-run --quiet
 done
 
 # expect_guard <description> <expected error text> <cargo feature args...>

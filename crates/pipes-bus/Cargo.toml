@@ -18,7 +18,16 @@ rolling = ["hiroz/rolling"]
 
 [dependencies]
 pipes-core.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+futures.workspace = true
 hiroz = { workspace = true, features = ["rmw-zenoh"] }
+# Graph entities carry hiroz-protocol's QoS types, which hiroz does not re-export.
+hiroz-protocol.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
 zenoh.workspace = true
 
 [lints]

@@ -7,11 +7,13 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
+# One distro per build (see pipes-bus). Each also selects the test kit's distro
+# so `cargo test --no-default-features --features <distro>` stays consistent.
 default = ["lyrical"]
-jazzy = ["pipes-bus/jazzy"]
-kilted = ["pipes-bus/kilted"]
-lyrical = ["pipes-bus/lyrical"]
-rolling = ["pipes-bus/rolling"]
+jazzy = ["pipes-bus/jazzy", "pipes-testkit/jazzy"]
+kilted = ["pipes-bus/kilted", "pipes-testkit/kilted"]
+lyrical = ["pipes-bus/lyrical", "pipes-testkit/lyrical"]
+rolling = ["pipes-bus/rolling", "pipes-testkit/rolling"]
 
 [dependencies]
 pipes-core.workspace = true
@@ -20,12 +22,14 @@ pipes-api.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 humantime.workspace = true
+metrics-exporter-prometheus.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+pipes-testkit = { workspace = true }
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

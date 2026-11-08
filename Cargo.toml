@@ -14,6 +14,7 @@ repository = "https://github.com/aaronchongth/rmf-pipes"
 pipes-core = { path = "crates/pipes-core" }
 pipes-bus = { path = "crates/pipes-bus", default-features = false }
 pipes-api = { path = "crates/pipes-api" }
+pipes-testkit = { path = "crates/pipes-testkit", default-features = false }
 
 # ROS 2 over zenoh. hiroz owns rmw_zenoh wire compatibility; pin it exactly and
 # upgrade deliberately (see docs/decisions.md). zenoh is pinned to the version
@@ -21,6 +22,7 @@ pipes-api = { path = "crates/pipes-api" }
 # this pin cargo would silently resolve a newer 1.x.
 hiroz = { version = "=0.2.1", default-features = false }
 hiroz-msgs = { version = "=0.2.1", default-features = false }
+hiroz-protocol = { version = "=0.2.1", default-features = false, features = ["std"] }
 zenoh = { version = "=1.9.0", default-features = false }
 
 # Runtime
@@ -36,6 +38,7 @@ tower = "0.5"
 tower-http = { version = "0.7", features = ["trace", "timeout", "limit"] }
 
 # Serialization / config
+base64 = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -43,6 +46,8 @@ humantime = "2"
 time = { version = "0.3", features = ["formatting", "serde"] }
 
 # Observability
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 thiserror = "2"

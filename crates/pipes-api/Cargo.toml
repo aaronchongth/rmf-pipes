@@ -17,6 +17,7 @@ serde_json.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+pipes-core = { workspace = true, features = ["fake"] }
 tokio = { workspace = true, features = ["io-util"] }
 tower.workspace = true
 http-body-util = "0.1"

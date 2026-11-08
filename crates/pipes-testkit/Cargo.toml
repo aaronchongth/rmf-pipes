@@ -1,0 +1,34 @@
+[package]
+name = "pipes-testkit"
+description = "Test support for rmf-pipes: in-process zenoh router, fixture publishers, hermetic and interop tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# Forwarded to every crate that cares, so the whole test build speaks one distro.
+default = ["lyrical"]
+jazzy = ["pipes-bus/jazzy", "hiroz/jazzy", "hiroz-msgs/jazzy"]
+kilted = ["pipes-bus/kilted", "hiroz/kilted", "hiroz-msgs/kilted"]
+lyrical = ["pipes-bus/lyrical", "hiroz/lyrical", "hiroz-msgs/lyrical"]
+rolling = ["pipes-bus/rolling", "hiroz/rolling", "hiroz-msgs/rolling"]
+
+[dependencies]
+pipes-core = { workspace = true, features = ["fake"] }
+pipes-bus.workspace = true
+hiroz = { workspace = true, features = ["rmw-zenoh"] }
+hiroz-msgs = { workspace = true, features = ["std_msgs", "geometry_msgs", "sensor_msgs"] }
+zenoh = { workspace = true, features = ["transport_tcp"] }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+futures.workspace = true
+tokio-util.workspace = true
+
+[lints]
+workspace = true

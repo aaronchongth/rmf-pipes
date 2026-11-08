@@ -24,6 +24,8 @@ impl Drop for ChildGuard {
 }
 
 struct Server {
+    /// The in-process zenoh router the server connects to.
+    _router: pipes_testkit::TestRouter,
     child: ChildGuard,
     addr: String,
     /// Log lines consumed while waiting for `listening`, in order.
@@ -33,9 +35,10 @@ struct Server {
 }
 
 impl Server {
-    /// Start on a free port with a clean environment and wait for the
-    /// `listening` log line.
+    /// Start on a free port, connected to a fresh in-process zenoh router, with
+    /// a clean environment, and wait for the `listening` log line.
     fn start() -> Self {
+        let router = pipes_testkit::TestRouter::start();
         let mut child = ChildGuard(
             Command::new(BIN)
                 .env_clear()
@@ -48,6 +51,7 @@ impl Server {
                     "--shutdown-drain",
                     "2s",
                 ])
+                .args(["--zenoh-connect", &router.endpoint()])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::inherit())
                 .spawn()
@@ -73,6 +77,7 @@ impl Server {
             }
         };
         Self {
+            _router: router,
             child,
             addr,
             seen,
@@ -115,7 +120,7 @@ impl Server {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serves_healthz_and_stops_cleanly_on_sigterm() {
     let mut server = Server::start();
 
@@ -161,5 +166,63 @@ fn signal_handlers_are_installed_before_listening_is_logged() {
     assert!(
         installed < listening,
         "handlers installed after `listening` was logged"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serves_prometheus_metrics() {
+    let server = Server::start();
+    let res = reqwest::get(server.url("/metrics")).await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert!(
+        res.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/plain"),
+        "{:?}",
+        res.headers()
+    );
+    // Gauges are set on the first hub tick; poll briefly.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let body = reqwest::get(server.url("/metrics"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        if body.contains("rmf_pipes_graph_nodes") && body.contains("rmf_pipes_type_mismatches") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "hub gauges never appeared:\n{body}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// With no router reachable, startup fails with a clear error instead of
+/// serving an empty graph.
+#[test]
+fn startup_fails_fast_without_a_zenoh_router() {
+    // Port 1 (tcpmux) is privileged, so no test router can be listening on it.
+    let out = Command::new(BIN)
+        .env_clear()
+        .env("RUST_LOG", "info")
+        .args(["--listen", "127.0.0.1:0", "--log-format", "json"])
+        .args(["--zenoh-connect", "tcp/127.0.0.1:1"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "should exit non-zero");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stdout.contains("\"listening\""),
+        "must not announce listening:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("zenoh"),
+        "error should mention zenoh:\n{stderr}"
     );
 }

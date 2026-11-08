@@ -2,6 +2,21 @@
 
 These are settled decisions, newest first. Reopen one only with new information, and record the change here.
 
+## 2026-11-08: We convert type descriptions ourselves
+hiroz 0.2.1's `discover_topic_schema` rejects `byte`, `char`, bounded and fixed strings ("Unknown type ID: 16/21"). That rules out `diagnostic_msgs`, `/parameter_events` and anything with `byte[]`. `pipes-bus/src/type_desc.rs` calls the standard `~/get_type_description` service through hiroz's public `GetTypeDescription` types and maps every ROS type id. Wide strings and `long double` stay unsupported because hiroz can't decode them. **Remove `type_desc.rs` once hiroz maps every id**; the fix should go upstream.
+
+## 2026-11-08: The rate cap keeps the newest sample
+A leading-edge throttle dropped the last sample of a burst for good: a door that changed state three times quickly showed the first state forever. The cap is trailing-edge: within each interval the newest sample replaces any pending one, and it is delivered when the interval ends.
+
+## 2026-11-08: Subscriptions bind to the publisher's advertised hash
+`pipes-bus` subscribes through hiroz's doc-hidden `create_sub_impl` with the publisher's `TypeInfo`. The public `create_dyn_sub` recomputes the hash locally, and rmw_zenoh routes by hash, so any difference would silently deliver nothing. The test `subscription_binds_to_the_advertised_hash` guards this: its fixture advertises a hash hiroz would never compute and serves its own type description. Swapping in `create_dyn_sub` makes it fail.
+
+## 2026-11-08: Fail fast when no zenoh router is reachable
+In client mode, startup exits with an error before `listening`, rather than serving an empty graph. Restarting is the orchestrator's job, whether that's systemd or k8s.
+
+## 2026-11-08: `ROS_DOMAIN_ID` is honoured
+hiroz 0.2.1 reads `ROS_DOMAIN_ID`; the Sept 2026 spike, on an older hiroz, saw it ignored. rmf-pipes exposes the domain as `--domain-id`, with `ROS_DOMAIN_ID` as its env var. Tests pin domain 0 explicitly.
+
 ## 2026-11-08: Defer Postgres to phase 3
 Nothing in phases 0–2 persists anything: live state is in memory. Postgres (sqlx, migrations, `sqlx::test`, pixi-managed `postgresql`) arrives with auth in phase 3. Until then, the server runs with no external dependencies apart from a zenoh router, which keeps the agent inner loop trivial.
 

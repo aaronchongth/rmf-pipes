@@ -15,3 +15,6 @@ invariants = "scripts/check-invariants.sh"
 check = { depends-on = ["fmt-check", "lint", "test"] }
 ci = { depends-on = ["check", "invariants", "distros"] }
 run = "cargo run --locked -p rmf-pipes --"
+# L4: real rmw_zenoh_cpp from /opt/ros/$ROS_DISTRO. Skips loudly if missing,
+# fails instead when PIPES_INTEROP_REQUIRED=1.
+interop = "cargo test --locked -p pipes-testkit --test interop -- --ignored --test-threads=1 --nocapture"
