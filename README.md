@@ -23,6 +23,7 @@ You need Rust via [rustup](https://rustup.rs); `rust-toolchain.toml` pins the ve
 - `GET /api/v1/topic/latest?name=/chatter`: latest sample, subscribing on demand
 - `GET /api/v1/topic/schema?name=/chatter`: the message definition
 - `GET /api/v1/topic/stream?name=/chatter`: live samples as server-sent events
+- `POST /api/v1/topic/publish`, `POST /api/v1/service/call`: write to allowlisted topics and services (needs auth; audited)
 - `GET /openapi.json`, `GET /docs/`: the OpenAPI description and Swagger UI
 - `GET /`: the introspection dashboard. `GET /metrics`: Prometheus metrics.
 

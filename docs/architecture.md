@@ -76,6 +76,13 @@ Dependency direction: `rmf-pipes → {pipes-api, pipes-bus} → pipes-core`. `pi
   - user changes, written in the same transaction as the change itself
 - With no database configured, the middleware marks everyone anonymous and the API is read-only.
 
+## Writes (phase 4)
+`pipes-api::writes` handles every write the same way: it checks authentication, the allowlist and the role (with audited refusals), then the per-user/target rate limit, then **writes the audit entry**, then calls `Bus::publish` / `Bus::call`.
+
+In `pipes-bus`:
+- `publish` picks the one type the subscribers advertise (refusing if there's more than one), fetches its schema (cached, discovery bounded, failures cached for 10 s), builds the message strictly from JSON (`json::json_to_message`, honouring defaults), and publishes on a cached publisher bound to that hash. Publishers idle for 60 s are undeclared.
+- `call` does the same for the service's single server (refusing if there are several), through a cached `ZClient<RawService>`.
+
 ## Shutdown
 SIGINT or SIGTERM cancels a `CancellationToken`.
 - The HTTP server stops accepting connections.

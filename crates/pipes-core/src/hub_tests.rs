@@ -467,6 +467,19 @@ async fn slow_watcher_lags_instead_of_blocking() {
 async fn rejects_invalid_topic_names() {
     let bus = FakeBus::new();
     let hub = hub(&bus, cfg());
+    let too_long = format!("/{}", "a".repeat(255));
+    assert!(matches!(
+        hub.watch(&too_long),
+        Err(HubError::InvalidTopic(_))
+    ));
+    assert!(
+        hub.watch(&format!("/{}", "a".repeat(254))).is_ok(),
+        "255 bytes is allowed"
+    );
+    assert!(
+        HubError::InvalidTopic(too_long).to_string().len() < 300,
+        "errors don't echo long names"
+    );
     for bad in ["", "/", "chatter", "/a//b", "/a/", "/a b", "/a/**"] {
         assert!(
             matches!(hub.watch(bad), Err(HubError::InvalidTopic(_))),

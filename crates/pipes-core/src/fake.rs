@@ -11,23 +11,32 @@ use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::UnboundedReceiverStream};
 
 use crate::{
-    bus::{Bus, BusError, DecodeError, RawSample, Subscription},
+    bus::{Bus, BusError, Called, DecodeError, Published, RawSample, Subscription, WriteError},
     graph::{Endpoint, EndpointKind, GraphSnapshot, Qos},
     schema::{Field, FieldType, Schema},
 };
 
+/// A scripted service implementation for [`FakeBus::serve`].
+pub type ServiceFn =
+    Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, WriteError> + Send + Sync>;
+
 /// A scriptable bus. Topics are declared with [`FakeBus::add_publisher`];
-/// samples are injected with [`FakeBus::publish`].
+/// samples are injected with [`FakeBus::publish`] (which delivers to
+/// subscriptions; [`Bus::publish`] records writes, see [`FakeBus::published`]).
 #[derive(Debug, Default)]
 pub struct FakeBus {
     state: Mutex<State>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct State {
     graph: GraphSnapshot,
     failures: HashMap<String, BusError>,
     hangs: std::collections::HashSet<String>,
+    published: HashMap<String, Vec<serde_json::Value>>,
+    services: HashMap<String, (String, ServiceFn)>,
+    write_failures: HashMap<String, WriteError>,
+    call_timeouts: Vec<std::time::Duration>,
     subscribers: HashMap<String, Vec<mpsc::UnboundedSender<RawSample>>>,
     subscribe_calls: HashMap<String, usize>,
 }
@@ -135,6 +144,59 @@ impl FakeBus {
     }
 }
 
+impl std::fmt::Debug for State {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("State")
+            .field("graph", &self.graph)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FakeBus {
+    /// Messages published to `topic` through [`Bus::publish`], in order.
+    pub fn published(&self, topic: &str) -> Vec<serde_json::Value> {
+        self.lock()
+            .published
+            .get(topic)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Serve `service` (of `type_name`) with `f`, and add a server to the graph.
+    pub fn serve(
+        &self,
+        service: &str,
+        type_name: &str,
+        f: impl Fn(&serde_json::Value) -> Result<serde_json::Value, WriteError> + Send + Sync + 'static,
+    ) {
+        let mut st = self.lock();
+        st.services
+            .insert(service.to_owned(), (type_name.to_owned(), Arc::new(f)));
+        st.graph.endpoints.push(Endpoint {
+            kind: EndpointKind::ServiceServer,
+            name: service.to_owned(),
+            type_name: type_name.to_owned(),
+            type_hash: "RIHS01_fake".to_owned(),
+            node: Some("/fake_node".to_owned()),
+            qos: Qos {
+                reliable: true,
+                transient_local: false,
+                depth: Some(10),
+            },
+        });
+    }
+
+    /// The timeout each [`Bus::call`] was given, in order.
+    pub fn call_timeouts(&self) -> Vec<std::time::Duration> {
+        self.lock().call_timeouts.clone()
+    }
+
+    /// Make the next writes to `target` fail with `err` (until cleared).
+    pub fn fail_writes(&self, target: &str, err: WriteError) {
+        self.lock().write_failures.insert(target.to_owned(), err);
+    }
+}
+
 /// The schema the fake reports for every topic: `{ data: string }`.
 pub fn fake_schema(type_name: &str) -> Schema {
     Schema {
@@ -175,6 +237,68 @@ impl Bus for FakeBus {
             type_name: publisher.type_name,
             type_hash: publisher.type_hash,
             samples: Box::pin(UnboundedReceiverStream::new(rx).map(|s| s)),
+        })
+    }
+
+    /// Records the message. Fails like the real bus when nothing in the graph
+    /// uses the topic; data must be a JSON object.
+    async fn publish(
+        &self,
+        topic: &str,
+        data: &serde_json::Value,
+    ) -> Result<Published, WriteError> {
+        let mut st = self.lock();
+        if let Some(e) = st.write_failures.get(topic) {
+            return Err(e.clone());
+        }
+        let eps: Vec<Endpoint> = st
+            .graph
+            .endpoints
+            .iter()
+            .filter(|e| e.kind.is_topic() && e.name == topic)
+            .cloned()
+            .collect();
+        let Some(first) = eps.first() else {
+            return Err(WriteError::NoEndpoint(topic.to_owned()));
+        };
+        if !data.is_object() {
+            return Err(WriteError::InvalidMessage("expected a JSON object".into()));
+        }
+        let receipt = Published {
+            type_name: first.type_name.clone(),
+            type_hash: first.type_hash.clone(),
+            subscriptions: eps
+                .iter()
+                .filter(|e| e.kind == EndpointKind::Subscription)
+                .count(),
+        };
+        st.published
+            .entry(topic.to_owned())
+            .or_default()
+            .push(data.clone());
+        Ok(receipt)
+    }
+
+    async fn call(
+        &self,
+        service: &str,
+        request: &serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<Called, WriteError> {
+        let (type_name, f) = {
+            let mut st = self.lock();
+            st.call_timeouts.push(timeout);
+            if let Some(e) = st.write_failures.get(service) {
+                return Err(e.clone());
+            }
+            st.services
+                .get(service)
+                .cloned()
+                .ok_or_else(|| WriteError::NoEndpoint(service.to_owned()))?
+        };
+        Ok(Called {
+            type_name,
+            response: f(request)?,
         })
     }
 }

@@ -2,6 +2,30 @@
 
 These are settled decisions, newest first. Reopen one only with new information, and record the change here.
 
+## 2026-11-09: Writes are allowlisted, rate-limited and audited before they happen
+- `POST /api/v1/topic/publish` and `POST /api/v1/service/call` need authentication; anonymous mode is read-only.
+- The target must match an `--allow-publish` / `--allow-call` pattern. The pattern sets the minimum role (operator by default, `=admin` to restrict). When several match, the most permissive applies. An empty allowlist means nothing can be written.
+- Writes are limited to one per user per target per `--write-interval` (200 ms by default).
+- **Fail closed, and completed**:
+  - A `pending` entry, with the payload clipped at 4 KiB (`payload_truncated` sits outside the payload, so it can't be forged), is written before the bus is touched. If it can't be written, the write is refused (`503 audit_unavailable`).
+  - The write then runs in its own task, so a client disconnecting can't cut it short, and an `ok` entry (with the type and hash used) or an `error` entry, linked by `intent`, records how it ended.
+- **Bounded**:
+  - Names are at most 255 bytes.
+  - Refusals are audited at most 20 per user per action per minute.
+  - At most 32 writes run at once.
+  - A message may build at most 100 000 elements.
+  - Service calls wait at most 9 s, because hiroz's querier gives up at 10 s by itself.
+- **The message type is taken from the topic's subscribers** (else its publishers), and publishes bind to their advertised hash, like subscriptions. So something must already use a topic before rmf-pipes can write to it, and there's no free-form type parameter to get wrong.
+  - If the subscribers (or publishers) disagree on the type, the write is refused (`409 type_conflict`) rather than leaving some of them without it.
+  - A service with more than one server is refused too, because a zenoh query would run on all of them.
+  - A type description is only accepted if it describes the type that was asked for.
+  - Omitted fields take the message's own defaults from its type description (e.g. `Quaternion.w = 1.0`).
+  - rmf-pipes' own publishes don't make a topic "published" for `/latest`; its write publishers are undeclared after 60 s unused.
+- **JSON → message is strict.** Unknown fields, wrong types, out-of-range numbers and bounds violations are `400 invalid_message`, with the field path. Omitted fields take their defaults. 64-bit integers accept numbers or strings, and byte arrays accept base64 or arrays.
+- **Service calls** use hiroz's public typed client with a pass-through CDR type (`pipes-bus/src/raw.rs`), because the raw client is FFI-only.
+  - Request and response schemas come from the server's type description of the service type (rclcpp/rclpy), falling back to separate request/response descriptions (hiroz servers).
+  - Service part types (`pkg/srv/X_Request`) are renamed to `pkg/msg/…` internally, because hiroz's schema builder only accepts message names.
+
 ## 2026-11-09: Auth is built in; without a database the API is anonymous and read-only
 - **Users, roles, sessions, API tokens and the audit log live in Postgres** (`pipes-db`, schema `pipes`; sqlx's own `_sqlx_migrations` table is in `public`).
   - Roles are `viewer` < `operator` < `admin`.

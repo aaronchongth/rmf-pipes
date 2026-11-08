@@ -9,6 +9,7 @@ mod bus;
 mod convert;
 pub mod distro;
 pub mod json;
+mod raw;
 mod type_desc;
 
 pub use bus::{BusConfig, ConnectError, HirozBus};

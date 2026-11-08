@@ -306,3 +306,87 @@ async fn bootstrap_admin_logs_in_and_the_api_is_protected(pool: PgPool) {
     // Close the router outside the current-thread runtime too.
     std::thread::spawn(move || drop(router)).join().unwrap();
 }
+
+#[sqlx::test(migrator = "pipes_db::MIGRATOR")]
+async fn an_operator_token_publishes_through_the_binary_and_it_is_audited(pool: PgPool) {
+    let url = db_url(&pool);
+    let router = std::thread::spawn(pipes_testkit::TestRouter::start)
+        .join()
+        .unwrap();
+    let endpoint = router.endpoint();
+    let sub = std::thread::spawn(move || {
+        pipes_testkit::spawn_string_subscriber(&endpoint, "door_adapter", "/door_requests")
+    })
+    .join()
+    .unwrap();
+    let db = pipes_db::Db::from_pool(pool);
+    let op = db
+        .create_user("op", PW, pipes_db::Role::Operator)
+        .await
+        .unwrap();
+    let (token, _) = db.create_api_token(op.id, "e2e", None).await.unwrap();
+    let app = serve(
+        &router,
+        &["--database-url", &url, "--allow-publish", "door_requests"],
+        &[],
+    );
+    let http = reqwest::Client::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    // Retry until rmf-pipes' graph shows the subscriber.
+    loop {
+        let r = http
+            .post(format!("{}/api/v1/topic/publish", app.base))
+            .bearer_auth(&token)
+            .json(&json!({"name": "/door_requests", "data": {"data": "open main"}}))
+            .send()
+            .await
+            .unwrap();
+        let status = r.status();
+        let body: Value = r.json().await.unwrap();
+        if status == 200 {
+            assert_eq!(body["type_name"], "std_msgs/msg/String");
+            break;
+        }
+        assert_eq!(body["error"], "no_endpoint", "{body}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never published: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !sub.received().contains(&"open main".to_owned()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the subscriber never got it"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // Not allowlisted: refused.
+    let r = http
+        .post(format!("{}/api/v1/topic/publish", app.base))
+        .bearer_auth(&token)
+        .json(&json!({"name": "/cmd_vel", "data": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let ok = db
+        .list_audit(&pipes_db::AuditQuery {
+            action: Some("topic.publish".into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.outcome == "ok" && r.target == "/door_requests")
+        .count();
+    assert!(ok >= 1);
+    drop(app);
+    std::thread::spawn(move || {
+        drop(sub);
+        drop(router);
+    })
+    .join()
+    .unwrap();
+}

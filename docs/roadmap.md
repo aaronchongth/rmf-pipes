@@ -35,7 +35,7 @@ Status: ✅ done · 🚧 in progress · 📋 planned. Each phase ends with `pixi
 ## Phase 3: Auth ✅
 Postgres via sqlx and pixi. Local users with a bootstrap admin, sessions, hashed API tokens, roles, login rate limit, password-reset CLI. OIDC is deferred to a follow-up (📋).
 
-## Phase 4: Write path 📋
+## Phase 4: Write path ✅
 Allowlisted publish and service calls per topic and role, rate-limited, with an audit log in Postgres.
 
 ## Phase 5: zenoh Postgres storage backend 📋

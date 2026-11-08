@@ -424,3 +424,268 @@ fn connect_fails_fast_without_a_router() {
     let err = HirozBus::connect(bus_config("tcp/127.0.0.1:1")).unwrap_err();
     assert!(err.to_string().contains("zenoh"), "{err}");
 }
+
+// ---- write path (phase 4) -----------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_reaches_a_typed_subscriber() {
+    init_logging();
+    let router = TestRouter::start();
+    let (_ctx, node) = fixture_node(&router.endpoint(), "door_adapter");
+    let sub = node
+        .create_sub::<RosString>("/door_requests")
+        .build()
+        .unwrap();
+    let bus = connect(&router);
+    wait_until(T, "the /door_requests subscriber", || {
+        let n = bus
+            .graph()
+            .endpoints
+            .iter()
+            .filter(|e| e.name == "/door_requests" && e.kind == EndpointKind::Subscription)
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let receipt = bus
+        .publish("/door_requests", &json!({"data": "open main"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        (receipt.type_name.as_str(), receipt.subscriptions),
+        ("std_msgs/msg/String", 1)
+    );
+    let got = tokio::task::spawn_blocking(move || sub.recv_timeout(T))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.data, "open main");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_errors_are_specific() {
+    init_logging();
+    let router = TestRouter::start();
+    let (_ctx, node) = fixture_node(&router.endpoint(), "door_adapter");
+    let _sub = node
+        .create_sub::<RosString>("/door_requests")
+        .build()
+        .unwrap();
+    let bus = connect(&router);
+    assert_eq!(
+        bus.publish("/nobody", &json!({})).await.unwrap_err(),
+        pipes_core::bus::WriteError::NoEndpoint("/nobody".into())
+    );
+    wait_until(T, "the subscriber", || {
+        let n = bus
+            .graph()
+            .endpoints
+            .iter()
+            .filter(|e| e.name == "/door_requests")
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let err = bus
+        .publish("/door_requests", &json!({"data": 5}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, pipes_core::bus::WriteError::InvalidMessage(m) if m.contains("data: expected a string")),
+        "{err:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_calls_reach_a_hiroz_server() {
+    use hiroz_msgs::example_interfaces::{AddTwoIntsResponse, srv::AddTwoInts};
+    init_logging();
+    let router = TestRouter::start();
+    let (_ctx, node) = fixture_node(&router.endpoint(), "adder");
+    let mut server = node
+        .create_service::<AddTwoInts>("/add_two_ints")
+        .build()
+        .unwrap();
+    let _serve = tokio::spawn(async move {
+        while let Ok(req) = server.async_take_request().await {
+            let (msg, reply) = req.into_parts();
+            let _ = reply
+                .reply(&AddTwoIntsResponse { sum: msg.a + msg.b })
+                .await;
+        }
+    });
+    let bus = connect(&router);
+    wait_until(T, "the /add_two_ints server", || {
+        let n = bus
+            .graph()
+            .services()
+            .iter()
+            .filter(|s| s.name == "/add_two_ints")
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let called = bus
+        .call("/add_two_ints", &json!({"a": "40", "b": 2}), T)
+        .await
+        .unwrap();
+    assert_eq!(called.type_name, "example_interfaces/srv/AddTwoInts");
+    assert_eq!(called.response, json!({"sum": "42"}));
+    let err = bus
+        .call("/add_two_ints", &json!({"a": "x"}), T)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, pipes_core::bus::WriteError::InvalidMessage(_)),
+        "{err:?}"
+    );
+    let err = bus.call("/nobody", &json!({}), T).await.unwrap_err();
+    assert!(
+        matches!(err, pipes_core::bus::WriteError::NoEndpoint(_)),
+        "{err:?}"
+    );
+}
+
+/// Wait until the graph shows exactly `n` remote subscriptions of `topic`.
+async fn wait_subs(bus: &HirozBus, topic: &str, n: usize) {
+    wait_until(T, &format!("{n} subscriptions of {topic}"), || {
+        let c = bus
+            .graph()
+            .endpoints
+            .iter()
+            .filter(|e| e.name == topic && e.kind == EndpointKind::Subscription)
+            .count();
+        async move { (c == n).then_some(()).ok_or(format!("{c}")) }
+    })
+    .await;
+}
+
+/// Publishers bind to the subscribers' advertised hash, and the publisher
+/// cache is keyed by it: when the subscriber is replaced by one with another
+/// hash, a new publisher is made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publishes_bind_to_the_subscribers_advertised_hash() {
+    use hiroz::entity::TypeInfo;
+    init_logging();
+    let router = TestRouter::start();
+    let bus = connect(&router);
+
+    // 1. A normal subscriber.
+    let (ctx1, normal) = fixture_node(&router.endpoint(), "normal");
+    let sub1 = normal.create_sub::<RosString>("/swap").build().unwrap();
+    wait_subs(&bus, "/swap", 1).await;
+    bus.publish("/swap", &json!({"data": "one"})).await.unwrap();
+    let got = tokio::task::spawn_blocking(move || sub1.recv_timeout(T))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(got.data, "one");
+    drop(normal);
+    drop(ctx1);
+    wait_subs(&bus, "/swap", 0).await;
+
+    // 2. A subscriber advertising a hash hiroz would never compute.
+    let ctx2 = pipes_testkit::fixture_context(&router.endpoint());
+    let forger = ctx2
+        .create_node("forger")
+        .without_parameters()
+        .build()
+        .unwrap();
+    let _td = pipes_testkit::serve_type_description(&forger, pipes_testkit::string_schema());
+    let forged = pipes_testkit::forged_hash(0xcd);
+    let sub2 = forger
+        .create_sub_impl::<RosString>(
+            "/swap",
+            Some(TypeInfo::new(
+                "std_msgs::msg::dds_::String_",
+                forged.clone(),
+            )),
+        )
+        .build()
+        .unwrap();
+    wait_subs(&bus, "/swap", 1).await;
+    let receipt = bus.publish("/swap", &json!({"data": "two"})).await.unwrap();
+    assert_eq!(receipt.type_hash, forged.to_rihs_string());
+    let got = tokio::task::spawn_blocking(move || sub2.recv_timeout(T))
+        .await
+        .unwrap()
+        .expect("not delivered: the publisher isn't bound to the advertised hash");
+    assert_eq!(got.data, "two");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn publish_picks_the_subscribers_type_and_counts_only_remote_matches() {
+    init_logging();
+    let router = TestRouter::start();
+    let (_c1, a) = fixture_node(&router.endpoint(), "consumer_a");
+    let (_c2, b) = fixture_node(&router.endpoint(), "consumer_b");
+    let (_c3, p) = fixture_node(&router.endpoint(), "producer");
+    let _s1 = a.create_sub::<RosString>("/mixed").build().unwrap();
+    let _s2 = b.create_sub::<RosString>("/mixed").build().unwrap();
+    // A publisher of another type on the same topic doesn't decide the type.
+    let _p = p.create_pub::<Int32>("/mixed").build().unwrap();
+    let bus = connect(&router);
+    wait_subs(&bus, "/mixed", 2).await;
+    // rmf-pipes' own subscription must not count.
+    let _own = bus.subscribe("/mixed").await;
+    let receipt = bus
+        .publish("/mixed", &json!({"data": "for strings"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        (receipt.type_name.as_str(), receipt.subscriptions),
+        ("std_msgs/msg/String", 2)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ambiguous_writes_are_refused() {
+    use hiroz_msgs::example_interfaces::{AddTwoIntsResponse, srv::AddTwoInts};
+    init_logging();
+    let router = TestRouter::start();
+    let (_c1, a) = fixture_node(&router.endpoint(), "string_consumer");
+    let (_c2, b) = fixture_node(&router.endpoint(), "int_consumer");
+    let _s1 = a.create_sub::<RosString>("/clash").build().unwrap();
+    let _s2 = b.create_sub::<Int32>("/clash").build().unwrap();
+    let mut servers = Vec::new();
+    for node in [&a, &b] {
+        let mut srv = node.create_service::<AddTwoInts>("/twice").build().unwrap();
+        servers.push(tokio::spawn(async move {
+            while let Ok(req) = srv.async_take_request().await {
+                let (msg, reply) = req.into_parts();
+                let _ = reply
+                    .reply(&AddTwoIntsResponse { sum: msg.a + msg.b })
+                    .await;
+            }
+        }));
+    }
+    let bus = connect(&router);
+    wait_subs(&bus, "/clash", 2).await;
+    let err = bus
+        .publish("/clash", &json!({"data": 1}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, pipes_core::bus::WriteError::Conflict(_)),
+        "{err:?}"
+    );
+    wait_until(T, "two /twice servers", || {
+        let n = bus
+            .graph()
+            .services()
+            .iter()
+            .filter(|s| s.name == "/twice")
+            .map(|s| s.servers)
+            .sum::<usize>();
+        async move { (n == 2).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let err = bus
+        .call("/twice", &json!({"a": 1, "b": 2}), T)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, pipes_core::bus::WriteError::Conflict(_)),
+        "{err:?}"
+    );
+}

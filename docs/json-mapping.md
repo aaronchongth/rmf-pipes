@@ -27,6 +27,20 @@ The implementation is `crates/pipes-bus/src/json.rs`, and the test that pins it 
 
 Not supported: `wstring`, `wchar` and `long double`, which hiroz cannot decode. A topic whose type uses them shows status `failed`, with an error naming the field.
 
+## Writing (publish and service calls)
+The same mapping is accepted in the other direction, strictly:
+- Unknown fields are an error.
+- Omitted fields take the message's defaults from its definition (e.g. `w: 1.0` for `geometry_msgs/Quaternion`), else zero, empty or `false`.
+- Integers must be JSON integers that fit their type: `1.0` is refused for an `int32`.
+- 64-bit integers may also be decimal strings (`"-7"`; no `+` or spaces). Narrower integers may not.
+- `float32` values must fit (`1e300` is refused). Floats accept `"NaN"`, `"Infinity"` and `"-Infinity"`.
+- Strings can't contain NUL.
+- `uint8`/`byte`/`char` arrays may be base64 strings or arrays of 0–255.
+- Bounded strings and sequences, and fixed arrays, are length-checked.
+- One message may build at most 100 000 elements (nested messages plus collection items; byte blobs count one per 64 bytes).
+
+Errors name the path, e.g. `waypoints[2].x: expected a number, got "fast"`.
+
 ## Sample envelope
 
 Every sample served by the API is wrapped like this:

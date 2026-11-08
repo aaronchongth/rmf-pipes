@@ -171,6 +171,31 @@ pub struct Config {
     )]
     pub max_streams: usize,
 
+    /// Topics that may be published to via the API (needs a database),
+    /// comma-separated `pattern` or `pattern=role` (role: operator, the
+    /// default, or admin), e.g. `door_requests,fleet/*/estop=admin`.
+    #[arg(
+        long,
+        env = "RMF_PIPES_ALLOW_PUBLISH",
+        hide_env_values = true,
+        value_delimiter = ','
+    )]
+    pub allow_publish: Vec<String>,
+
+    /// Services that may be called via the API, like `--allow-publish`.
+    #[arg(
+        long,
+        env = "RMF_PIPES_ALLOW_CALL",
+        hide_env_values = true,
+        value_delimiter = ','
+    )]
+    pub allow_call: Vec<String>,
+
+    /// Minimum time between writes by one user to one topic or service; `0s`
+    /// disables the limit.
+    #[arg(long, env = "RMF_PIPES_WRITE_INTERVAL", hide_env_values = true, value_parser = humantime::parse_duration, default_value = "200ms")]
+    pub write_interval: Duration,
+
     /// How long to wait for a publisher's type description when subscribing.
     #[arg(long, env = "RMF_PIPES_DISCOVERY_TIMEOUT", hide_env_values = true, value_parser = humantime::parse_duration, default_value = "5s")]
     pub discovery_timeout: Duration,
@@ -305,6 +330,24 @@ impl Config {
         }
     }
 
+    /// The write allowlist. Empty entries (e.g. an empty env var) are
+    /// ignored; invalid ones are an error naming the entry.
+    pub fn writes(&self) -> Result<pipes_api::writes::WritePolicy, String> {
+        let parse =
+            |flag: &str, raw: &[String]| -> Result<Vec<pipes_api::writes::WriteRule>, String> {
+                raw.iter()
+                    .map(|r| r.trim())
+                    .filter(|r| !r.is_empty())
+                    .map(|r| r.parse().map_err(|e| format!("--{flag} `{r}`: {e}")))
+                    .collect()
+            };
+        Ok(pipes_api::writes::WritePolicy {
+            publish: parse("allow-publish", &self.allow_publish)?,
+            call: parse("allow-call", &self.allow_call)?,
+            min_interval: (!self.write_interval.is_zero()).then_some(self.write_interval),
+        })
+    }
+
     /// Auth settings.
     pub fn auth(&self) -> pipes_api::auth::AuthConfig {
         pipes_api::auth::AuthConfig {
@@ -409,6 +452,24 @@ mod tests {
     }
 
     #[test]
+    fn write_rules_ignore_empty_entries_and_report_bad_ones() {
+        let cfg = Config::try_parse_from([
+            "rmf-pipes",
+            "--allow-publish",
+            ",door_requests,,fleet/*/estop=admin",
+        ])
+        .unwrap();
+        let w = cfg.writes().unwrap();
+        assert_eq!(w.publish.len(), 2);
+        let cfg = Config::try_parse_from(["rmf-pipes", "--allow-call", "door-requests"]).unwrap();
+        assert!(
+            cfg.writes()
+                .unwrap_err()
+                .contains("--allow-call `door-requests`")
+        );
+    }
+
+    #[test]
     fn zero_rate_disables_the_cap() {
         let cfg = Config::try_parse_from(["rmf-pipes", "--max-rate-hz", "0"]).unwrap();
         assert_eq!(cfg.hub().max_rate_hz, None);
@@ -437,7 +498,7 @@ mod tests {
         let mut checked = 0;
         check(&Config::command(), &mut checked);
         assert!(
-            checked >= 24,
+            checked >= 27,
             "expected env-backed arguments, checked {checked}"
         );
     }

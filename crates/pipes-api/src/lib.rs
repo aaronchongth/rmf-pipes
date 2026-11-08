@@ -14,6 +14,7 @@ pub mod metrics;
 pub mod serve;
 mod state;
 pub mod ui;
+pub mod writes;
 
 use axum::{Json, Router, http::StatusCode, response::IntoResponse};
 use tower_http::trace::{DefaultOnFailure, TraceLayer};
@@ -42,6 +43,8 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             auth::authenticate,
         ))
+        // Bounds every JSON body (messages for the write path included).
+        .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         // 5xx here are expected outcomes (a client's `wait_ms` ran out, a
         // topic can't be decoded); handlers log real problems themselves.
         .layer(TraceLayer::new_for_http().on_failure(DefaultOnFailure::new().level(Level::DEBUG)))
@@ -74,6 +77,8 @@ async fn no_route() -> impl IntoResponse {
 mod api_tests;
 #[cfg(test)]
 mod auth_tests;
+#[cfg(test)]
+mod writes_tests;
 
 #[cfg(test)]
 pub(crate) mod test_support {

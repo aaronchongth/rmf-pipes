@@ -22,6 +22,17 @@ async fn main() -> anyhow::Result<()> {
     }
     init_logging(config.log_format);
 
+    let writes = config.writes().map_err(|e| anyhow::anyhow!(e))?;
+    for rule in writes.publish.iter().chain(&writes.call) {
+        if rule.matches_everything() {
+            tracing::warn!(
+                pattern = %rule.pattern,
+                role = %rule.role,
+                "a write rule matches every topic or service (including every node's parameter services)"
+            );
+        }
+    }
+
     // Refuse an open, unauthenticated API on the network unless asked to.
     if config.database_url.is_none()
         && !config.listen.ip().is_loopback()
@@ -93,7 +104,15 @@ async fn main() -> anyhow::Result<()> {
         Arc::new(move || metrics.render()),
         shutdown.clone(),
     )
-    .with_max_streams(config.max_streams);
+    .with_max_streams(config.max_streams)
+    .with_writes(writes);
+    if config.database_url.is_none()
+        && !(config.allow_publish.is_empty() && config.allow_call.is_empty())
+    {
+        tracing::warn!(
+            "--allow-publish/--allow-call need --database-url: without authentication nothing can be written"
+        );
+    }
     if let Some(auth) = auth {
         tokio::spawn(purge_sessions(auth.db.clone(), shutdown.clone()));
         state = state.with_auth(auth);

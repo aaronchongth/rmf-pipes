@@ -213,7 +213,8 @@ pub struct TopicView {
 pub enum HubError {
     /// The topic name is not a valid fully-qualified ROS name.
     #[error(
-        "invalid topic name `{0}`: must be fully qualified (start with `/`), use only letters, digits, `_` and `/`, with no empty segments"
+        "invalid topic name `{}`: must be fully qualified (start with `/`), use only letters, digits, `_` and `/`, with no empty segments, at most 255 bytes",
+        shorten(.0)
     )]
     InvalidTopic(String),
     /// The hub is closing; no new watches.
@@ -222,6 +223,15 @@ pub enum HubError {
     /// `max_on_demand_topics` on-demand topics are already open.
     #[error("too many topics are open on demand (limit {0}); try again when some go idle")]
     TooManyTopics(usize),
+}
+
+/// `s`, cut to 64 characters for error messages.
+pub fn shorten(s: &str) -> String {
+    if s.chars().count() <= 64 {
+        s.to_owned()
+    } else {
+        format!("{}…", s.chars().take(64).collect::<String>())
+    }
 }
 
 /// Cheap-to-clone handle to the hub.
@@ -438,6 +448,11 @@ impl Hub {
                 shutdown: CancellationToken::new(),
             }),
         }
+    }
+
+    /// The bus the hub reads from (the write path uses it directly).
+    pub fn bus(&self) -> &Arc<dyn Bus> {
+        &self.inner.bus
     }
 
     /// The configuration the hub was created with.
@@ -935,10 +950,15 @@ fn to_offset(t: SystemTime) -> OffsetDateTime {
     OffsetDateTime::from(t)
 }
 
+/// Longest accepted topic or service name, in bytes (ROS's own limit is
+/// about this, and it bounds what clients can make us store and echo).
+pub const MAX_TOPIC_LEN: usize = 255;
+
 /// Check that `topic` is a fully qualified ROS topic name: absolute, letters,
 /// digits, `_` and `/` only, no empty segments, no trailing slash.
 pub fn validate_topic(topic: &str) -> Result<(), HubError> {
     let ok = topic.len() > 1
+        && topic.len() <= MAX_TOPIC_LEN
         && topic.starts_with('/')
         && !topic.ends_with('/')
         && !topic[1..].split('/').any(str::is_empty)

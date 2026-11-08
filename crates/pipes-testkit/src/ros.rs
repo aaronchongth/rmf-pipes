@@ -88,7 +88,43 @@ impl RosEnv {
         )
     }
 
+    /// Run inline Python (rclpy available) on rmw_zenoh, connected to the
+    /// router on `port`.
+    pub fn python(&self, port: u16, code: &str) -> RosProcess {
+        let escaped = code.replace('\'', "'\"'\"'");
+        self.spawn(
+            "python",
+            &format!("exec python3 -c '{escaped}'"),
+            &format!(
+                r#"connect/endpoints=["tcp/127.0.0.1:{port}"];scouting/multicast/enabled=false"#
+            ),
+        )
+    }
+
+    /// Run `ros2 <args>` with stdout captured; [`RosProcess::wait_output`]
+    /// collects it.
+    pub fn ros2_capture(&self, port: u16, args: &str) -> RosProcess {
+        self.spawn_with(
+            "ros2",
+            &format!("exec ros2 {args}"),
+            &format!(
+                r#"connect/endpoints=["tcp/127.0.0.1:{port}"];scouting/multicast/enabled=false"#
+            ),
+            true,
+        )
+    }
+
     fn spawn(&self, label: &str, script: &str, zenoh_override: &str) -> RosProcess {
+        self.spawn_with(label, script, zenoh_override, false)
+    }
+
+    fn spawn_with(
+        &self,
+        label: &str,
+        script: &str,
+        zenoh_override: &str,
+        capture: bool,
+    ) -> RosProcess {
         let setup = self.prefix.join("setup.bash");
         let log_dir = std::env::temp_dir().join("rmf-pipes-interop-ros-logs");
         let child = Command::new("bash")
@@ -99,7 +135,11 @@ impl RosEnv {
             .env("ZENOH_CONFIG_OVERRIDE", zenoh_override)
             .env("ROS_LOG_DIR", log_dir)
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
+            .stdout(if capture {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap_or_else(|e| panic!("spawn {label}: {e}"));
@@ -118,6 +158,23 @@ pub struct RosProcess {
 }
 
 impl RosProcess {
+    /// Wait up to `timeout` for the process to exit and return its stdout.
+    pub fn wait_output(mut self, timeout: Duration) -> String {
+        use std::io::Read;
+        let deadline = std::time::Instant::now() + timeout;
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                let mut out = String::new();
+                if let Some(mut so) = self.child.stdout.take() {
+                    let _ = so.read_to_string(&mut out);
+                }
+                return out;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        panic!("{} did not exit within {timeout:?}", self.label);
+    }
+
     /// Fail the test if the process has already exited.
     pub fn assert_running(&mut self) {
         if let Ok(Some(status)) = self.child.try_wait() {
@@ -128,9 +185,14 @@ impl RosProcess {
 
 impl Drop for RosProcess {
     fn drop(&mut self) {
+        if let Ok(Some(_)) = self.child.try_wait() {
+            return; // already exited
+        }
         // `exec` in the script means the child is the ROS process itself.
+        // SIGINT, because the ros2 CLI ignores SIGTERM.
         let _ = Command::new("kill")
             .args(["-INT", &self.child.id().to_string()])
+            .stderr(Stdio::null())
             .status();
         for _ in 0..50 {
             if let Ok(Some(_)) = self.child.try_wait() {

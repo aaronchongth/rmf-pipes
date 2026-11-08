@@ -16,6 +16,8 @@ pub struct ApiError {
     /// Stable, machine-readable code: `unauthenticated`, `bad_credentials`,
     /// `forbidden`, `csrf`, `too_many_attempts`, `auth_disabled`,
     /// `auth_unavailable`, `invalid`, `conflict`, `not_found`, `internal`,
+    /// `not_allowlisted`, `too_many_writes`, `audit_unavailable`,
+    /// `invalid_message`, `no_endpoint`, `bus_error`, `timeout`,
     /// `invalid_topic`, `invalid_query`,
     /// `unknown_topic`, `no_publisher`, `topic_failed`, `closed`,
     /// `too_many_topics`, `too_many_streams`, `shutting_down`, `no_sample`,
@@ -58,6 +60,11 @@ impl Problem {
     /// 403: authenticated, but not allowed.
     pub fn forbidden(error: &'static str, message: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, error, message)
+    }
+
+    /// 502: a downstream system (the robot bus) failed.
+    pub fn bad_gateway(error: &'static str, message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, error, message)
     }
 
     /// 409: conflicts with existing state.

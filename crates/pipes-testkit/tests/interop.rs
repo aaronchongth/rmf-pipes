@@ -194,3 +194,137 @@ async fn transient_local_from_rmw_zenoh_reaches_a_late_joiner() {
         started.elapsed()
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a ROS 2 install with rmw_zenoh; run with `pixi run interop`"]
+async fn publish_reaches_an_rclpy_subscriber() {
+    init_logging();
+    let Some(ros) = RosEnv::require_or_skip("interop") else {
+        return;
+    };
+    let port = free_port();
+    let _router = ros.router(port);
+    let endpoint = format!("tcp/127.0.0.1:{port}");
+    let echo = ros.ros2_capture(port, "topic echo --once /door_requests std_msgs/msg/String");
+    let bus = Arc::new(HirozBus::connect(bus_config(&endpoint)).unwrap());
+    wait_until(T, "the echo subscriber", || {
+        let n = bus
+            .graph()
+            .endpoints
+            .iter()
+            .filter(|e| e.name == "/door_requests")
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    // Retry until the CLI's subscription has matched (its first sample wins).
+    let mut out = None;
+    let echo = std::thread::spawn(move || echo.wait_output(T));
+    for _ in 0..50 {
+        if echo.is_finished() {
+            out = Some(echo.join().unwrap());
+            break;
+        }
+        // `--once` exits after its first message, taking its subscription
+        // with it, so a later publish may find nobody: that's success.
+        match bus
+            .publish("/door_requests", &json!({"data": "open main"}))
+            .await
+        {
+            Ok(_) | Err(pipes_core::bus::WriteError::NoEndpoint(_)) => {}
+            Err(e) => panic!("{e}"),
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let out = out.expect("ros2 topic echo never received the message");
+    assert!(out.contains("data: open main"), "{out}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a ROS 2 install with rmw_zenoh; run with `pixi run interop`"]
+async fn service_calls_reach_an_rclpy_server() {
+    init_logging();
+    let Some(ros) = RosEnv::require_or_skip("interop") else {
+        return;
+    };
+    let port = free_port();
+    let _router = ros.router(port);
+    let endpoint = format!("tcp/127.0.0.1:{port}");
+    // Every rclpy node serves the standard parameter services.
+    let _node = ros.python(
+        port,
+        "import rclpy\nfrom rclpy.node import Node\nrclpy.init()\nn = Node(\"param_host\")\nn.declare_parameter(\"speed\", 1.5)\nn.declare_parameter(\"name\", \"tiny\")\ntry:\n    rclpy.spin(n)\nexcept (KeyboardInterrupt, Exception):\n    pass",
+    );
+    let bus = Arc::new(HirozBus::connect(bus_config(&endpoint)).unwrap());
+    wait_until(T, "the get_parameters service", || {
+        let n = bus
+            .graph()
+            .services()
+            .iter()
+            .filter(|s| s.name == "/param_host/get_parameters")
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let called = bus
+        .call(
+            "/param_host/get_parameters",
+            &json!({"names": ["speed", "name"]}),
+            T,
+        )
+        .await
+        .unwrap();
+    assert_eq!(called.type_name, "rcl_interfaces/srv/GetParameters");
+    let values = called.response["values"].as_array().unwrap();
+    assert_eq!(values[0]["double_value"], json!(1.5));
+    assert_eq!(values[1]["string_value"], json!("tiny"));
+    // `byte[]` (which hiroz 0.2.1 couldn't describe) maps to base64, and
+    // int64 to a string, as everywhere else.
+    assert_eq!(values[0]["byte_array_value"], json!(""));
+    assert_eq!(values[0]["integer_value"], json!("0"));
+}
+
+/// Omitted fields get the message's own defaults from its type description
+/// (`geometry_msgs/Quaternion.w` defaults to 1.0), not zero.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a ROS 2 install with rmw_zenoh; run with `pixi run interop`"]
+async fn omitted_fields_get_the_messages_defaults() {
+    init_logging();
+    let Some(ros) = RosEnv::require_or_skip("interop") else {
+        return;
+    };
+    let port = free_port();
+    let _router = ros.router(port);
+    let endpoint = format!("tcp/127.0.0.1:{port}");
+    let echo = ros.ros2_capture(
+        port,
+        "topic echo --once /orientation geometry_msgs/msg/Quaternion",
+    );
+    let bus = Arc::new(HirozBus::connect(bus_config(&endpoint)).unwrap());
+    wait_until(T, "the echo subscriber", || {
+        let n = bus
+            .graph()
+            .endpoints
+            .iter()
+            .filter(|e| e.name == "/orientation")
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let echo = std::thread::spawn(move || echo.wait_output(T));
+    let mut out = None;
+    for _ in 0..50 {
+        if echo.is_finished() {
+            out = Some(echo.join().unwrap());
+            break;
+        }
+        match bus.publish("/orientation", &json!({"z": 0.5})).await {
+            Ok(_) | Err(pipes_core::bus::WriteError::NoEndpoint(_)) => {}
+            Err(e) => panic!("{e}"),
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    let out = out.expect("ros2 topic echo never received the message");
+    assert!(out.contains("w: 1.0"), "w should default to 1.0:\n{out}");
+    assert!(out.contains("z: 0.5"), "{out}");
+}

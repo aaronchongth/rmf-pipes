@@ -47,6 +47,7 @@ const DEFAULT_WAIT_MS: u64 = 2000;
         (name = "ops", description = "Health and metrics"),
         (name = "auth", description = "Login, the current user and API tokens"),
         (name = "users", description = "User management and the audit log (admin)"),
+        (name = "writes", description = "Publishing to topics and calling services (allowlisted, audited)"),
     ),
     components(schemas(Lagged, TopicStatus)),
     modifiers(&Security),
@@ -112,6 +113,9 @@ pub fn router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
             crate::accounts::delete_user
         ))
         .routes(routes!(crate::accounts::list_audit))
+        .routes(routes!(crate::writes::policy))
+        .routes(routes!(crate::writes::publish))
+        .routes(routes!(crate::writes::call))
         .split_for_parts()
 }
 

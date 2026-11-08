@@ -73,12 +73,28 @@ pub async fn fetch(
         type_hash: type_hash.to_owned(),
         include_type_sources: false,
     };
-    let response = client
-        .call_with_timeout(&request, timeout)
-        .await
-        .map_err(|_| format!("no answer from {service} within {timeout:?} (is the node spinning, and is its type description service enabled?)"))?;
+    let response = match tokio::time::timeout(timeout, client.call(&request)).await {
+        Err(_) => {
+            return Err(format!(
+                "no answer from {service} within {timeout:?} (is the node spinning, and is its type description service enabled?)"
+            ));
+        }
+        Ok(Err(e)) => return Err(format!("{service} failed: {e}")),
+        Ok(Ok(r)) => r,
+    };
     if !response.successful {
-        return Err(format!("{service} refused: {}", response.failure_reason));
+        return Err(format!(
+            "{service} refused {type_name}: {}",
+            response.failure_reason
+        ));
+    }
+    // Don't trust a node to describe a different type than asked for: the
+    // result is cached by (type, hash) and used for everyone's writes.
+    let described = &response.type_description.type_description.type_name;
+    if described != type_name {
+        return Err(format!(
+            "{service} described `{described}` when asked for `{type_name}`"
+        ));
     }
     to_schema(&response.type_description)
 }
@@ -113,7 +129,14 @@ fn convert(
         return Err(format!("recursive type {}", t.type_name));
     }
     stack.push(t.type_name.clone());
-    let mut builder = MessageSchema::builder(&t.type_name);
+    // hiroz's schema builder only accepts `pkg/msg/Name`; service and action
+    // parts (`pkg/srv/Name_Request`, `pkg/action/Name_Goal`) decode the same,
+    // so name them as messages.
+    let schema_name = t
+        .type_name
+        .replacen("/srv/", "/msg/", 1)
+        .replacen("/action/", "/msg/", 1);
+    let mut builder = MessageSchema::builder(&schema_name);
     for f in &t.fields {
         let ft = &f.field_type;
         let (base, collection) = split(ft.type_id);
@@ -164,7 +187,10 @@ fn convert(
             Collection::Bounded => FieldType::BoundedSequence(Box::new(base_type), capacity),
             Collection::Unbounded => FieldType::Sequence(Box::new(base_type)),
         };
-        builder = builder.field(&f.name, field_type);
+        builder = match parse_default(&field_type, &f.default_value) {
+            Some(default) => builder.field_with_default(&f.name, field_type, default),
+            None => builder.field(&f.name, field_type),
+        };
     }
     stack.pop();
     let schema = builder
@@ -172,6 +198,74 @@ fn convert(
         .map_err(|e| format!("{}: {e}", t.type_name))?;
     done.insert(t.type_name.clone(), schema.clone());
     Ok(schema)
+}
+
+/// A field's default from its type description (the `.msg` default, e.g.
+/// `1.0` for `geometry_msgs/Quaternion.w`), so omitted fields in writes get
+/// what ROS would give them. Unparseable defaults are ignored (zero/empty).
+fn parse_default(ty: &FieldType, raw: &str) -> Option<hiroz::dynamic::DynamicValue> {
+    use hiroz::dynamic::DynamicValue as V;
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let unquote = |s: &str| -> String {
+        let s = s.trim();
+        let quoted = s.len() >= 2
+            && ((s.starts_with('"') && s.ends_with('"'))
+                || (s.starts_with('\'') && s.ends_with('\'')));
+        if quoted {
+            s[1..s.len() - 1].to_owned()
+        } else {
+            s.to_owned()
+        }
+    };
+    let scalar = |t: &FieldType, s: &str| -> Option<V> {
+        let s = s.trim();
+        Some(match t {
+            FieldType::Bool => V::Bool(match s.to_ascii_lowercase().as_str() {
+                "true" | "1" => true,
+                "false" | "0" => false,
+                _ => return None,
+            }),
+            FieldType::Int8 => V::Int8(s.parse().ok()?),
+            FieldType::Int16 => V::Int16(s.parse().ok()?),
+            FieldType::Int32 => V::Int32(s.parse().ok()?),
+            FieldType::Int64 => V::Int64(s.parse().ok()?),
+            FieldType::Uint8 => V::Uint8(s.parse().ok()?),
+            FieldType::Uint16 => V::Uint16(s.parse().ok()?),
+            FieldType::Uint32 => V::Uint32(s.parse().ok()?),
+            FieldType::Uint64 => V::Uint64(s.parse().ok()?),
+            FieldType::Float32 => V::Float32(s.parse().ok()?),
+            FieldType::Float64 => V::Float64(s.parse().ok()?),
+            FieldType::String | FieldType::BoundedString(_) => V::String(unquote(s)),
+            _ => return None,
+        })
+    };
+    match ty {
+        FieldType::Array(e, _) | FieldType::Sequence(e) | FieldType::BoundedSequence(e, _) => {
+            let inner = raw.strip_prefix('[')?.strip_suffix(']')?;
+            let items: Option<Vec<V>> = if inner.trim().is_empty() {
+                Some(Vec::new())
+            } else {
+                inner.split(',').map(|i| scalar(e, i)).collect()
+            };
+            let items = items?;
+            if let FieldType::Array(_, n) = ty
+                && items.len() != *n
+            {
+                return None;
+            }
+            if matches!(ty, FieldType::Sequence(_)) && **e == FieldType::Uint8 {
+                return Some(V::Bytes(
+                    items.into_iter().filter_map(|v| v.as_u8()).collect(),
+                ));
+            }
+            Some(V::Array(items))
+        }
+        FieldType::Message(_) => None,
+        t => scalar(t, raw),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +418,52 @@ mod tests {
                 "{type_id}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn service_part_types_are_accepted() {
+        let req = WireIndividualTypeDescription {
+            type_name: "example_interfaces/srv/AddTwoInts_Request".into(),
+            fields: vec![field("a", id::INT64, 0, 0, "")],
+        };
+        let t = WireTypeDescription {
+            type_description: WireIndividualTypeDescription {
+                type_name: "example_interfaces/srv/AddTwoInts".into(),
+                fields: vec![field(
+                    "request_message",
+                    id::NESTED_TYPE,
+                    0,
+                    0,
+                    "example_interfaces/srv/AddTwoInts_Request",
+                )],
+            },
+            referenced_type_descriptions: vec![req],
+        };
+        let s = to_schema(&t).unwrap();
+        assert!(
+            matches!(&s.field("request_message").unwrap().field_type, H::Message(m) if m.field("a").is_some())
+        );
+    }
+
+    #[test]
+    fn message_defaults_are_kept() {
+        let mut w = field("w", id::DOUBLE, 0, 0, "");
+        w.default_value = "1.0".into();
+        let mut name = field("name", id::STRING, 0, 0, "");
+        name.default_value = "\"tiny\"".into();
+        let mut flags = field("flags", id::BOOLEAN + id::ARRAY, 2, 0, "");
+        flags.default_value = "[true, false]".into();
+        let mut junk = field("junk", id::INT32, 0, 0, "");
+        junk.default_value = "not a number".into();
+        let s = to_schema(&td(vec![w, name, flags, junk], vec![])).unwrap();
+        let m = hiroz::dynamic::DynamicMessage::new(&s);
+        assert_eq!(m.get::<f64>("w").unwrap(), 1.0);
+        assert_eq!(m.get::<String>("name").unwrap(), "tiny");
+        assert_eq!(
+            m.get::<i32>("junk").unwrap(),
+            0,
+            "unparseable defaults fall back to zero"
+        );
     }
 
     #[test]

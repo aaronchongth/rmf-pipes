@@ -18,6 +18,9 @@ pub enum Outcome {
     Denied,
     /// It was allowed but failed (e.g. the bus rejected the message).
     Error,
+    /// About to be attempted; a later `ok` or `error` entry with
+    /// `detail.intent` = this entry's id records how it ended.
+    Pending,
 }
 
 impl Outcome {
@@ -26,6 +29,7 @@ impl Outcome {
             Self::Ok => "ok",
             Self::Denied => "denied",
             Self::Error => "error",
+            Self::Pending => "pending",
         }
     }
 }
@@ -70,7 +74,7 @@ pub struct AuditRecord {
     pub action: String,
     /// What it was done to.
     pub target: String,
-    /// `ok`, `denied` or `error`.
+    /// `ok`, `denied`, `error` or `pending` (a write about to be attempted).
     pub outcome: String,
     /// Action-specific details.
     #[cfg_attr(feature = "openapi", schema(value_type = Object))]
@@ -101,14 +105,30 @@ pub(crate) async fn insert<'e>(
          VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
     )
     .bind(e.actor_id)
-    .bind(&e.actor)
+    .bind(e.actor.replace('\0', "\u{FFFD}"))
     .bind(&e.auth_method)
     .bind(&e.action)
-    .bind(&e.target)
+    .bind(e.target.replace('\0', "\u{FFFD}"))
     .bind(e.outcome.as_str())
-    .bind(sqlx::types::Json(&e.detail))
+    .bind(sqlx::types::Json(strip_nul(&e.detail)))
     .fetch_one(ex)
     .await?)
+}
+
+/// Postgres `jsonb` rejects `\u0000`; replace it so attacker-chosen strings
+/// can't make an audit write fail.
+fn strip_nul(v: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match v {
+        Value::String(s) => Value::String(s.replace('\0', "\u{FFFD}")),
+        Value::Array(a) => Value::Array(a.iter().map(strip_nul).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, v)| (k.replace('\0', "\u{FFFD}"), strip_nul(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 impl Db {
@@ -200,6 +220,21 @@ mod tests {
             .len(),
             5
         );
+    }
+
+    #[sqlx::test]
+    async fn nul_bytes_cannot_break_an_audit_write(pool: PgPool) {
+        let db = Db::from_pool(pool);
+        let e = AuditEntry {
+            target: "a\0b".into(),
+            detail: json!({"k\0": "v\0", "n": [1, "x\0"]}),
+            outcome: Outcome::Pending,
+            ..entry("topic.publish", "o\0p")
+        };
+        db.record_audit(&e).await.unwrap();
+        let r = &db.list_audit(&AuditQuery::default()).await.unwrap()[0];
+        assert_eq!(r.outcome, "pending");
+        assert!(!r.detail.to_string().contains("\\u0000") && !r.target.contains('\0'));
     }
 
     #[sqlx::test]

@@ -18,6 +18,73 @@ pub trait Bus: Send + Sync + fmt::Debug + 'static {
     /// publishers' durability and reliability. Dropping the returned
     /// [`Subscription`] unsubscribes.
     async fn subscribe(&self, topic: &str) -> Result<Subscription, BusError>;
+
+    /// Publish `data` (JSON per `docs/json-mapping.md`) on `topic`, with the
+    /// type its existing endpoints (subscribers, else publishers) advertise.
+    async fn publish(&self, topic: &str, data: &serde_json::Value)
+    -> Result<Published, WriteError>;
+
+    /// Call `service` with `request` (JSON) and wait up to `timeout` for the
+    /// response.
+    async fn call(
+        &self,
+        service: &str,
+        request: &serde_json::Value,
+        timeout: std::time::Duration,
+    ) -> Result<Called, WriteError>;
+}
+
+/// What a publish was bound to.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Published {
+    /// ROS type name the message was encoded as.
+    pub type_name: String,
+    /// RIHS01 hash it was published with.
+    pub type_hash: String,
+    /// Matching subscriptions in the graph when it was sent.
+    pub subscriptions: usize,
+}
+
+/// A service call's result.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Called {
+    /// ROS service type, e.g. `example_interfaces/srv/AddTwoInts`.
+    pub type_name: String,
+    /// The response (JSON per `docs/json-mapping.md`).
+    #[cfg_attr(feature = "openapi", schema(value_type = Object))]
+    pub response: serde_json::Value,
+}
+
+/// Why a publish or call failed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WriteError {
+    /// Nothing in the graph uses the topic or serves the service, so its type
+    /// is unknown.
+    #[error("no endpoint of `{0}` is visible, so its type is unknown")]
+    NoEndpoint(String),
+    /// The type description could not be obtained.
+    #[error("could not get the type of `{target}`: {reason}")]
+    Schema {
+        /// Topic or service.
+        target: String,
+        /// What went wrong.
+        reason: String,
+    },
+    /// The JSON doesn't fit the message type.
+    #[error("invalid message: {0}")]
+    InvalidMessage(String),
+    /// The target is ambiguous: its subscribers expect more than one type, or
+    /// more than one server provides the service.
+    #[error("refusing an ambiguous write: {0}")]
+    Conflict(String),
+    /// No response within the timeout.
+    #[error("no response within {0:?}")]
+    Timeout(std::time::Duration),
+    /// The bus refused or failed.
+    #[error("bus error: {0}")]
+    Bus(String),
 }
 
 /// An open subscription. Dropping it (including its stream) unsubscribes.

@@ -27,6 +27,9 @@ Every option is a flag, and can also be set with the environment variable shown.
 | `--session-max` | `RMF_PIPES_SESSION_MAX` | `7d` | A browser session ends this long after login, however much it is used (1m–30d; at least `--session-idle`). |
 | `--cookie-secure` | `RMF_PIPES_COOKIE_SECURE` | off | Mark the session cookie `Secure`, and name it `__Host-rmf_pipes_session` so sibling subdomains can't plant or shadow it. Use it whenever clients connect over HTTPS. |
 | `--insecure-no-auth` | `RMF_PIPES_INSECURE_NO_AUTH` | off | Allow a non-loopback `--listen` without a database. Anyone who can reach the port can read everything. |
+| `--allow-publish` | `RMF_PIPES_ALLOW_PUBLISH` | — | Topics that may be published to via the API, comma-separated `pattern` or `pattern=admin` (default role: operator), e.g. `door_requests,fleet/*/estop=admin`. Needs `--database-url`. |
+| `--allow-call` | `RMF_PIPES_ALLOW_CALL` | — | Services that may be called via the API, same syntax. |
+| `--write-interval` | `RMF_PIPES_WRITE_INTERVAL` | `200ms` | Minimum time between writes by one user to one topic or service (`0s` = no limit). |
 | `--discovery-timeout` | `RMF_PIPES_DISCOVERY_TIMEOUT` | `5s` | How long to wait for a publisher's type description when subscribing. |
 
 ## Users

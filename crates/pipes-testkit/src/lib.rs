@@ -216,3 +216,107 @@ pub fn spawn_string_publisher(
     });
     StringPublisher { task, _ctx: ctx }
 }
+
+/// A `std_msgs/String` fixture subscriber collecting what it receives.
+pub struct StringSubscriber {
+    received: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    _sub: Box<dyn std::any::Any + Send>,
+    _node: ZNode,
+    _ctx: hiroz::context::ZContext,
+}
+
+impl std::fmt::Debug for StringSubscriber {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StringSubscriber").finish_non_exhaustive()
+    }
+}
+
+impl StringSubscriber {
+    /// Everything received so far.
+    pub fn received(&self) -> Vec<String> {
+        self.received
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
+
+/// Subscribe to `topic` from a fixture node called `node_name`, for crates
+/// that must not depend on hiroz themselves.
+pub fn spawn_string_subscriber(
+    router_endpoint: &str,
+    node_name: &str,
+    topic: &str,
+) -> StringSubscriber {
+    use hiroz_msgs::std_msgs::String as RosString;
+    let (ctx, node) = fixture_node(router_endpoint, node_name);
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = received.clone();
+    let sub = node
+        .create_sub::<RosString>(topic)
+        .build_with_callback(move |msg: RosString| {
+            sink.lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(msg.data);
+        })
+        .expect("fixture subscriber");
+    StringSubscriber {
+        received,
+        _sub: Box::new(sub),
+        _node: node,
+        _ctx: ctx,
+    }
+}
+
+/// Serve `~/get_type_description` for `node` (created without hiroz's own
+/// type description service), answering every request with `schema`, whatever
+/// hash is asked for. With [`forged_hash`], this makes a fixture whose
+/// advertised hash hiroz would never compute, to prove rmf-pipes binds to
+/// advertised hashes. Keep the returned task alive.
+pub fn serve_type_description(
+    node: &ZNode,
+    schema: std::sync::Arc<hiroz::dynamic::MessageSchema>,
+) -> tokio::task::JoinHandle<()> {
+    use hiroz::{
+        ServiceTypeInfo,
+        dynamic::{
+            GetTypeDescription, GetTypeDescriptionResponse, schema_to_wire_type_description,
+        },
+    };
+    let name = format!("/{}/get_type_description", node.name());
+    let mut server = node
+        .create_service_impl::<GetTypeDescription>(
+            &name,
+            Some(GetTypeDescription::service_type_info()),
+        )
+        .build()
+        .expect("type description server");
+    let wire = schema_to_wire_type_description(&schema).expect("wire description");
+    tokio::spawn(async move {
+        while let Ok(req) = server.async_take_request().await {
+            let (_, reply) = req.into_parts();
+            let _ = reply
+                .reply(&GetTypeDescriptionResponse {
+                    successful: true,
+                    failure_reason: String::new(),
+                    type_description: wire.clone(),
+                    type_sources: vec![],
+                    extra_information: vec![],
+                })
+                .await;
+        }
+    })
+}
+
+/// A RIHS01 hash no real message has.
+pub fn forged_hash(byte: u8) -> hiroz::entity::TypeHash {
+    hiroz::entity::TypeHash::new(1, [byte; 32])
+}
+
+/// The `std_msgs/String` schema, built by hand.
+pub fn string_schema() -> std::sync::Arc<hiroz::dynamic::MessageSchema> {
+    hiroz::dynamic::MessageSchema::builder("std_msgs/msg/String")
+        .field("data", hiroz::dynamic::FieldType::String)
+        .build()
+        .expect("schema")
+}
