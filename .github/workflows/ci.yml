@@ -1,0 +1,30 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # Installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: prefix-dev/setup-pixi@v0.9.0
+        with:
+          pixi-version: v0.81.0
+          cache: true
+      # fmt-check + clippy (-D warnings) + hermetic tests + dependency
+      # invariants + every distro build and the distro guard.
+      - run: pixi run ci

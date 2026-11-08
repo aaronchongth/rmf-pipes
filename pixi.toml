@@ -1,0 +1,17 @@
+# Task runner and (from phase 3) non-Rust tool pins. Rust itself is pinned by
+# rust-toolchain.toml and comes from rustup.
+[workspace]
+name = "rmf-pipes"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+
+[tasks]
+fmt = "cargo fmt --all"
+fmt-check = "cargo fmt --all --check"
+lint = "cargo clippy --workspace --all-targets --locked -- -D warnings"
+test = "cargo test --workspace --locked"
+distros = "scripts/check-distros.sh"
+invariants = "scripts/check-invariants.sh"
+check = { depends-on = ["fmt-check", "lint", "test"] }
+ci = { depends-on = ["check", "invariants", "distros"] }
+run = "cargo run --locked -p rmf-pipes --"

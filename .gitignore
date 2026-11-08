@@ -1,0 +1,5 @@
+/target
+/.pixi
+*.snap.new
+*.pending-snap
+.env

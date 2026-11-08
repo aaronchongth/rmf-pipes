@@ -1,0 +1,25 @@
+[package]
+name = "pipes-bus"
+description = "rmf-pipes bus: the only crate that talks to hiroz/zenoh."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+# Exactly one ROS 2 distro must be selected. hiroz owns the per-distro rmw_zenoh
+# conventions; we only forward the choice. To build for another distro:
+#   cargo build --no-default-features --features jazzy
+default = ["lyrical"]
+jazzy = ["hiroz/jazzy"]
+kilted = ["hiroz/kilted"]
+lyrical = ["hiroz/lyrical"]
+rolling = ["hiroz/rolling"]
+
+[dependencies]
+pipes-core.workspace = true
+hiroz = { workspace = true, features = ["rmw-zenoh"] }
+zenoh.workspace = true
+
+[lints]
+workspace = true

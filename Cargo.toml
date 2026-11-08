@@ -1,0 +1,68 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "Apache-2.0"
+repository = "https://github.com/aaronchongth/rmf-pipes"
+
+[workspace.dependencies]
+# Internal crates
+pipes-core = { path = "crates/pipes-core" }
+pipes-bus = { path = "crates/pipes-bus", default-features = false }
+pipes-api = { path = "crates/pipes-api" }
+
+# ROS 2 over zenoh. hiroz owns rmw_zenoh wire compatibility; pin it exactly and
+# upgrade deliberately (see docs/decisions.md). zenoh is pinned to the version
+# hiroz 0.2.1 is built and tested against: hiroz only asks for ^1.9.0, so without
+# this pin cargo would silently resolve a newer 1.x.
+hiroz = { version = "=0.2.1", default-features = false }
+hiroz-msgs = { version = "=0.2.1", default-features = false }
+zenoh = { version = "=1.9.0", default-features = false }
+
+# Runtime
+tokio = { version = "1.47", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net"] }
+tokio-util = "0.7"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# HTTP
+axum = "0.8"
+tower = "0.5"
+tower-http = { version = "0.7", features = ["trace", "timeout", "limit"] }
+
+# Serialization / config
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+clap = { version = "4", features = ["derive", "env"] }
+humantime = "2"
+time = { version = "0.3", features = ["formatting", "serde"] }
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2"
+anyhow = "1"
+
+# Testing
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream"] }
+insta = { version = "1", features = ["json"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+unwrap_used = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
