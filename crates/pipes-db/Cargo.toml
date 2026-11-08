@@ -1,0 +1,31 @@
+[package]
+name = "pipes-db"
+description = "rmf-pipes persistence: users, sessions, API tokens and the audit log in Postgres."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+getrandom.workspace = true
+password-auth.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+utoipa = { workspace = true, optional = true }
+
+[features]
+# Derives utoipa schemas for the public types (used by pipes-api).
+openapi = ["dep:utoipa"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

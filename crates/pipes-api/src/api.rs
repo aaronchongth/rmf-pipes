@@ -34,18 +34,54 @@ const DEFAULT_WAIT_MS: u64 = 2000;
 #[openapi(
     info(
         title = "rmf-pipes",
-        description = "Live, read-only view of a ROS 2 system over zenoh. Message payloads follow \
-                       the JSON mapping in docs/json-mapping.md (64-bit integers are strings, \
-                       byte arrays are base64)."
+        description = "The data layer of an Open-RMF system: a live view of its ROS 2 graph over \
+                       zenoh. Message payloads follow the JSON mapping in docs/json-mapping.md \
+                       (64-bit integers are strings, byte arrays are base64). With a database \
+                       configured, everything except /healthz, POST /api/v1/auth/login, /login, \
+                       /openapi.json, /docs and /ui/assets needs a session cookie or \
+                       `Authorization: Bearer <API token>`."
     ),
     tags(
         (name = "graph", description = "The ROS graph: nodes, topics, services, type mismatches"),
         (name = "topics", description = "Subscriptions, latest samples, schemas and live streams"),
         (name = "ops", description = "Health and metrics"),
-    )
+        (name = "auth", description = "Login, the current user and API tokens"),
+        (name = "users", description = "User management and the audit log (admin)"),
+    ),
+    components(schemas(Lagged, TopicStatus)),
+    modifiers(&Security),
+    security(("bearer" = []), ("session" = []))
 )]
-#[openapi(components(schemas(Lagged, TopicStatus)))]
 struct ApiDoc;
+
+/// Security schemes: API tokens (`Authorization: Bearer rp_…`) and the
+/// browser session cookie. They apply to every operation except `/healthz`
+/// and `POST /api/v1/auth/login`, and are moot when auth is disabled.
+struct Security;
+
+impl utoipa::Modify for Security {
+    fn modify(&self, api: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{
+            ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme,
+        };
+        let c = api.components.get_or_insert_with(Default::default);
+        c.add_security_scheme(
+            "bearer",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .description(Some("An API token (`rp_…`) from POST /api/v1/auth/tokens"))
+                    .build(),
+            ),
+        );
+        c.add_security_scheme(
+            "session",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(
+                crate::auth::SESSION_COOKIE,
+            ))),
+        );
+    }
+}
 
 /// The documented routes and their OpenAPI description.
 pub fn router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
@@ -58,6 +94,24 @@ pub fn router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(latest))
         .routes(routes!(schema))
         .routes(routes!(stream))
+        .routes(routes!(crate::accounts::login))
+        .routes(routes!(crate::accounts::logout))
+        .routes(routes!(crate::accounts::me))
+        .routes(routes!(crate::accounts::change_password))
+        .routes(routes!(
+            crate::accounts::list_tokens,
+            crate::accounts::create_token
+        ))
+        .routes(routes!(crate::accounts::revoke_token))
+        .routes(routes!(
+            crate::accounts::list_users,
+            crate::accounts::create_user
+        ))
+        .routes(routes!(
+            crate::accounts::update_user,
+            crate::accounts::delete_user
+        ))
+        .routes(routes!(crate::accounts::list_audit))
         .split_for_parts()
 }
 

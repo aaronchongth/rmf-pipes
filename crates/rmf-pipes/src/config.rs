@@ -7,18 +7,67 @@
 //! test below fails if a new argument forgets it.
 //!
 //! clap echoes the offending value in *parse* errors, so an argument that may
-//! carry a secret must be parsed as a plain string (no fallible
-//! `value_parser`) and validated afterwards with a redacted error. The first
-//! such argument arrives with Postgres in phase 3, together with its test.
+//! carry a secret (`--database-url`, `--bootstrap-password`) is parsed as a
+//! plain string and validated afterwards with a redacted error.
+//!
+//! Without a subcommand the binary serves; `rmf-pipes user …` manages users.
 
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
-use clap::{Parser, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use pipes_core::pattern::TopicPattern;
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "rmf-pipes", version, about)]
 pub struct Config {
+    /// What to do; without one, serve.
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
+    /// Postgres URL (`postgres://user:password@host:5432/db`). Enables
+    /// authentication: users, sessions, API tokens and the audit log. Without
+    /// it the API is anonymous and read-only.
+    #[arg(
+        long,
+        env = "RMF_PIPES_DATABASE_URL",
+        hide_env_values = true,
+        global = true
+    )]
+    pub database_url: Option<String>,
+
+    /// How long to wait for Postgres at startup.
+    #[arg(long, env = "RMF_PIPES_DATABASE_CONNECT_TIMEOUT", hide_env_values = true, global = true, value_parser = humantime::parse_duration, default_value = "10s")]
+    pub database_connect_timeout: Duration,
+
+    /// With a database: if there are no users yet, create this admin at
+    /// startup, with the password from `--bootstrap-password`.
+    #[arg(long, env = "RMF_PIPES_BOOTSTRAP_ADMIN", hide_env_values = true)]
+    pub bootstrap_admin: Option<String>,
+
+    /// Password for `--bootstrap-admin`. Prefer the environment variable, so
+    /// the password doesn't show in the process list.
+    #[arg(long, env = "RMF_PIPES_BOOTSTRAP_PASSWORD", hide_env_values = true)]
+    pub bootstrap_password: Option<String>,
+
+    /// A browser session ends after this long without use (1 minute to 30 days).
+    #[arg(long, env = "RMF_PIPES_SESSION_IDLE", hide_env_values = true, value_parser = parse_session_duration, default_value = "12h")]
+    pub session_idle: Duration,
+
+    /// A browser session ends this long after login, however much it is used
+    /// (1 minute to 30 days, at least `--session-idle`).
+    #[arg(long, env = "RMF_PIPES_SESSION_MAX", hide_env_values = true, value_parser = parse_session_duration, default_value = "7d")]
+    pub session_max: Duration,
+
+    /// Mark the session cookie `Secure`. Set it when clients reach rmf-pipes
+    /// over HTTPS (e.g. behind a TLS-terminating proxy).
+    #[arg(long, env = "RMF_PIPES_COOKIE_SECURE", hide_env_values = true, action = ArgAction::SetTrue)]
+    pub cookie_secure: bool,
+
+    /// Allow serving without authentication on a non-loopback address.
+    /// Anyone who can reach the port can then read everything.
+    #[arg(long, env = "RMF_PIPES_INSECURE_NO_AUTH", hide_env_values = true, action = ArgAction::SetTrue)]
+    pub insecure_no_auth: bool,
+
     /// Address for the HTTP server. Use port 0 to pick a free port; the bound
     /// address is logged as `listening` with field `addr`.
     #[arg(
@@ -127,6 +176,92 @@ pub struct Config {
     pub discovery_timeout: Duration,
 }
 
+/// Session durations: 1 minute to 30 days.
+fn parse_session_duration(s: &str) -> Result<Duration, String> {
+    let d = humantime::parse_duration(s).map_err(|e| e.to_string())?;
+    if (Duration::from_secs(60)..=Duration::from_secs(30 * 24 * 3600)).contains(&d) {
+        Ok(d)
+    } else {
+        Err("must be between 1m and 30d".into())
+    }
+}
+
+/// Subcommands.
+#[derive(Debug, Clone, Subcommand)]
+pub enum Command {
+    /// Manage users (needs `--database-url`). Passwords are read from the
+    /// first line of stdin, so they don't end up in shell history or `ps`.
+    User {
+        /// What to do.
+        #[command(subcommand)]
+        action: UserAction,
+    },
+}
+
+/// `rmf-pipes user …`
+#[derive(Debug, Clone, Subcommand)]
+pub enum UserAction {
+    /// Create a user; the password is read from stdin.
+    Add {
+        /// Login name.
+        username: String,
+        /// Role.
+        #[arg(long, value_enum, default_value_t = RoleArg::Viewer)]
+        role: RoleArg,
+    },
+    /// List users.
+    List,
+    /// Reset a user's password (read from stdin); ends their sessions.
+    SetPassword {
+        /// Login name.
+        username: String,
+    },
+    /// Change a user's role.
+    SetRole {
+        /// Login name.
+        username: String,
+        /// New role.
+        #[arg(value_enum)]
+        role: RoleArg,
+    },
+    /// Disable a user: no login, and their sessions and tokens stop working.
+    Disable {
+        /// Login name.
+        username: String,
+    },
+    /// Re-enable a user.
+    Enable {
+        /// Login name.
+        username: String,
+    },
+    /// Delete a user with their sessions and tokens.
+    Delete {
+        /// Login name.
+        username: String,
+    },
+}
+
+/// A role on the command line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum RoleArg {
+    /// Read everything.
+    Viewer,
+    /// Read, and write to allowlisted topics.
+    Operator,
+    /// Everything, including user management and the audit log.
+    Admin,
+}
+
+impl From<RoleArg> for pipes_db::Role {
+    fn from(r: RoleArg) -> Self {
+        match r {
+            RoleArg::Viewer => Self::Viewer,
+            RoleArg::Operator => Self::Operator,
+            RoleArg::Admin => Self::Admin,
+        }
+    }
+}
+
 /// `--max-rate-hz`: 0 (unlimited) or a finite rate between 0.001 and 1e6 Hz.
 fn parse_rate(s: &str) -> Result<f64, String> {
     let hz: f64 = s.parse().map_err(|e| format!("{e}"))?;
@@ -170,6 +305,16 @@ impl Config {
         }
     }
 
+    /// Auth settings.
+    pub fn auth(&self) -> pipes_api::auth::AuthConfig {
+        pipes_api::auth::AuthConfig {
+            session_idle: self.session_idle,
+            session_max: self.session_max.max(self.session_idle),
+            cookie_secure: self.cookie_secure,
+            ..pipes_api::auth::AuthConfig::default()
+        }
+    }
+
     /// Hub settings.
     pub fn hub(&self) -> pipes_core::hub::HubConfig {
         pipes_core::hub::HubConfig {
@@ -193,6 +338,8 @@ pub enum LogFormat {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use clap::{Command, CommandFactory, Parser};
 
     use super::Config;
@@ -244,6 +391,24 @@ mod tests {
     }
 
     #[test]
+    fn session_durations_are_bounded() {
+        for bad in ["10s", "300000years", "0s"] {
+            assert!(
+                Config::try_parse_from(["rmf-pipes", "--session-idle", bad]).is_err(),
+                "{bad}"
+            );
+        }
+        let cfg =
+            Config::try_parse_from(["rmf-pipes", "--session-idle", "2d", "--session-max", "1d"])
+                .unwrap();
+        assert_eq!(
+            cfg.auth().session_max,
+            Duration::from_secs(2 * 24 * 3600),
+            "max is at least idle"
+        );
+    }
+
+    #[test]
     fn zero_rate_disables_the_cap() {
         let cfg = Config::try_parse_from(["rmf-pipes", "--max-rate-hz", "0"]).unwrap();
         assert_eq!(cfg.hub().max_rate_hz, None);
@@ -272,7 +437,7 @@ mod tests {
         let mut checked = 0;
         check(&Config::command(), &mut checked);
         assert!(
-            checked >= 16,
+            checked >= 24,
             "expected env-backed arguments, checked {checked}"
         );
     }

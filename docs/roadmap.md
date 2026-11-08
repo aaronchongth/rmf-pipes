@@ -32,8 +32,8 @@ Status: ✅ done · 🚧 in progress · 📋 planned. Each phase ends with `pixi
 - Server-rendered dashboard (askama + vendored htmx): overview, graph, topic live view, mismatches
 - Exit: in-process API tests with a fake bus, plus an e2e test (real binary + in-process router + hiroz publisher, over HTTP/SSE)
 
-## Phase 3: Auth 📋
-Postgres via sqlx and pixi. Local users with a bootstrap admin, sessions, hashed API tokens, roles, login rate limit, password-reset CLI; OIDC afterwards.
+## Phase 3: Auth ✅
+Postgres via sqlx and pixi. Local users with a bootstrap admin, sessions, hashed API tokens, roles, login rate limit, password-reset CLI. OIDC is deferred to a follow-up (📋).
 
 ## Phase 4: Write path 📋
 Allowlisted publish and service calls per topic and role, rate-limited, with an audit log in Postgres.

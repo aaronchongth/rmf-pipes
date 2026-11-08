@@ -15,6 +15,7 @@ pipes-core = { path = "crates/pipes-core" }
 pipes-bus = { path = "crates/pipes-bus", default-features = false }
 pipes-api = { path = "crates/pipes-api" }
 pipes-testkit = { path = "crates/pipes-testkit", default-features = false }
+pipes-db = { path = "crates/pipes-db" }
 
 # ROS 2 over zenoh. hiroz owns rmw_zenoh wire compatibility; pin it exactly and
 # upgrade deliberately (see docs/decisions.md). zenoh is pinned to the version
@@ -51,6 +52,12 @@ clap = { version = "4", features = ["derive", "env"] }
 humantime = "2"
 time = { version = "0.3", features = ["formatting", "serde"] }
 
+# Persistence and auth
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "migrate", "macros", "time", "json"] }
+password-auth = "2"
+sha2 = "0.11"
+getrandom = "0.4"
+
 # Observability
 metrics = "0.24"
 metrics-exporter-prometheus = { version = "0.18", default-features = false }
@@ -74,6 +81,13 @@ all = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+
+# argon2 is deliberately slow; unoptimised it makes every test login take
+# seconds. Optimise it (and its hash) even in debug builds.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

@@ -5,7 +5,9 @@
 //!   ([`api`]); Swagger UI at `/docs/`.
 //! - `/` and `/ui/*`: the introspection dashboard ([`ui`]).
 
+pub mod accounts;
 pub mod api;
+pub mod auth;
 pub mod error;
 pub mod health;
 pub mod metrics;
@@ -36,6 +38,10 @@ pub fn router(state: AppState) -> Router {
         )
         .fallback(no_route)
         .method_not_allowed_fallback(method_not_allowed)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::authenticate,
+        ))
         // 5xx here are expected outcomes (a client's `wait_ms` ran out, a
         // topic can't be decoded); handlers log real problems themselves.
         .layer(TraceLayer::new_for_http().on_failure(DefaultOnFailure::new().level(Level::DEBUG)))
@@ -48,7 +54,7 @@ async fn method_not_allowed() -> impl IntoResponse {
         StatusCode::METHOD_NOT_ALLOWED,
         Json(error::ApiError {
             error: "method_not_allowed",
-            message: "rmf-pipes is read-only; use GET".into(),
+            message: "this endpoint doesn't support that method; see /docs/".into(),
         }),
     )
 }
@@ -66,6 +72,8 @@ async fn no_route() -> impl IntoResponse {
 
 #[cfg(test)]
 mod api_tests;
+#[cfg(test)]
+mod auth_tests;
 
 #[cfg(test)]
 pub(crate) mod test_support {

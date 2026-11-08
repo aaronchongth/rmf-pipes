@@ -20,6 +20,7 @@ use pipes_core::{
 use crate::{
     AppState,
     api::{ApiQuery, TopicQuery},
+    auth::Caller,
     error::Problem,
 };
 
@@ -33,6 +34,7 @@ pub const HTMX_PATH: &str = "/ui/assets/htmx-2.0.11.min.js";
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(index))
+        .route("/login", get(login_page))
         .route("/ui/topic", get(topic_page))
         .route("/ui/fragments/overview", get(overview))
         .route("/ui/fragments/topic", get(topic_info))
@@ -44,6 +46,7 @@ pub fn routes() -> Router<AppState> {
 struct IndexPage {
     version: &'static str,
     ros_distro: &'static str,
+    user: Option<String>,
 }
 
 #[derive(Template)]
@@ -51,7 +54,23 @@ struct IndexPage {
 struct TopicPage {
     version: &'static str,
     ros_distro: &'static str,
+    user: Option<String>,
     name: String,
+}
+
+#[derive(Template)]
+#[template(path = "login.html")]
+struct LoginPage {
+    version: &'static str,
+    ros_distro: &'static str,
+    user: Option<String>,
+    next: String,
+}
+
+/// `?next=` on the login page.
+#[derive(Debug, serde::Deserialize)]
+struct LoginQuery {
+    next: Option<String>,
 }
 
 #[derive(Template)]
@@ -103,16 +122,32 @@ fn render(t: &impl Template) -> Response {
     }
 }
 
-async fn index(State(state): State<AppState>) -> Response {
+async fn index(State(state): State<AppState>, Caller(caller): Caller) -> Response {
     let b = state.build();
     render(&IndexPage {
         version: b.version,
         ros_distro: b.ros_distro,
+        user: caller.user().map(|u| u.username.clone()),
+    })
+}
+
+async fn login_page(State(state): State<AppState>, ApiQuery(q): ApiQuery<LoginQuery>) -> Response {
+    if state.auth().is_none() {
+        // Nothing to log in to.
+        return axum::response::Redirect::to("/").into_response();
+    }
+    let b = state.build();
+    render(&LoginPage {
+        version: b.version,
+        ros_distro: b.ros_distro,
+        user: None,
+        next: safe_next(q.next.as_deref()),
     })
 }
 
 async fn topic_page(
     State(state): State<AppState>,
+    Caller(caller): Caller,
     ApiQuery(q): ApiQuery<TopicQuery>,
 ) -> Result<Response, Problem> {
     pipes_core::hub::validate_topic(&q.name)?;
@@ -120,6 +155,7 @@ async fn topic_page(
     Ok(render(&TopicPage {
         version: b.version,
         ros_distro: b.ros_distro,
+        user: caller.user().map(|u| u.username.clone()),
         name: q.name,
     }))
 }
@@ -187,6 +223,19 @@ async fn topic_info(State(state): State<AppState>, ApiQuery(q): ApiQuery<TopicQu
         publishers,
         subscription: hub.topic(&q.name),
     })
+}
+
+/// Where to go after login: only a local absolute path. Anything that a
+/// browser could resolve off-site (`//host`, `/\\host`, control characters it
+/// strips, a scheme) becomes `/`.
+pub fn safe_next(next: Option<&str>) -> String {
+    let Some(n) = next else { return "/".into() };
+    let local = n.starts_with('/')
+        && !n.starts_with("//")
+        && !n.contains('\\')
+        && !n.chars().any(|c| c.is_control() || c.is_whitespace())
+        && n.len() <= 2048;
+    if local { n.to_owned() } else { "/".into() }
 }
 
 fn publisher_row(ep: &Endpoint) -> PublisherRow {

@@ -3,3 +3,4 @@
 *.snap.new
 *.pending-snap
 .env
+*.swp

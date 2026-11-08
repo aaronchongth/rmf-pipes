@@ -21,7 +21,7 @@ pub struct Health {
 }
 
 /// Liveness. rmf-pipes only starts serving after it has joined zenoh.
-#[utoipa::path(get, path = "/healthz", tag = "ops",
+#[utoipa::path(get, path = "/healthz", tag = "ops", security(()),
     responses((status = 200, description = "The process is up", body = Health)))]
 pub async fn healthz(State(state): State<AppState>) -> Json<Health> {
     let build = state.build();

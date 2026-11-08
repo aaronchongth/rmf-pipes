@@ -19,7 +19,26 @@ Every option is a flag, and can also be set with the environment variable shown.
 | `--max-payload-bytes` | `RMF_PIPES_MAX_PAYLOAD_BYTES` | `1048576` | Larger payloads are delivered with `data: null, omitted: "too_large"`, and are not decoded. |
 | `--max-topics` | `RMF_PIPES_MAX_TOPICS` | `256` | Most topics subscribed **on demand** at once (standing topics don't count). Further new topics get `503 too_many_topics`. |
 | `--max-streams` | `RMF_PIPES_MAX_STREAMS` | `256` | Most concurrent SSE streams. Further streams get `503 too_many_streams`. |
+| `--database-url` | `RMF_PIPES_DATABASE_URL` | — | Postgres URL. **Enables authentication.** Without it the API is anonymous and read-only, and only a loopback `--listen` is allowed. Never echoed, even in errors. It usually contains a password: prefer the env var, so it stays out of `ps`. |
+| `--database-connect-timeout` | `RMF_PIPES_DATABASE_CONNECT_TIMEOUT` | `10s` | How long to wait for Postgres at startup. |
+| `--bootstrap-admin` | `RMF_PIPES_BOOTSTRAP_ADMIN` | — | If the database has no users, create this admin at startup… |
+| `--bootstrap-password` | `RMF_PIPES_BOOTSTRAP_PASSWORD` | — | …with this password. Prefer the env var, so it stays out of `ps`. |
+| `--session-idle` | `RMF_PIPES_SESSION_IDLE` | `12h` | A browser session ends after this long without use (1m–30d). |
+| `--session-max` | `RMF_PIPES_SESSION_MAX` | `7d` | A browser session ends this long after login, however much it is used (1m–30d; at least `--session-idle`). |
+| `--cookie-secure` | `RMF_PIPES_COOKIE_SECURE` | off | Mark the session cookie `Secure`, and name it `__Host-rmf_pipes_session` so sibling subdomains can't plant or shadow it. Use it whenever clients connect over HTTPS. |
+| `--insecure-no-auth` | `RMF_PIPES_INSECURE_NO_AUTH` | off | Allow a non-loopback `--listen` without a database. Anyone who can reach the port can read everything. |
 | `--discovery-timeout` | `RMF_PIPES_DISCOVERY_TIMEOUT` | `5s` | How long to wait for a publisher's type description when subscribing. |
+
+## Users
+`rmf-pipes user …` manages users directly in the database (needs `--database-url`). Passwords are read from the first line of stdin:
+```
+rmf-pipes user add alice --role admin < alice.pw
+rmf-pipes user list
+rmf-pipes user set-password alice < new.pw     # ends alice's sessions and revokes her tokens
+rmf-pipes user set-role bob operator
+rmf-pipes user disable bob
+```
+Roles: `viewer` (read), `operator` (read, and in phase 4 write to allowlisted topics), `admin` (everything, including users, every token and the audit log). Scripts authenticate with API tokens: create one with `POST /api/v1/auth/tokens`, then send `Authorization: Bearer rp_…`.
 
 ## Startup behaviour
 - rmf-pipes joins zenoh **before** it logs `listening`. In client mode it **exits with an error** if no router is reachable, rather than serving an empty graph.

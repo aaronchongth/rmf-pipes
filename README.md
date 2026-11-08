@@ -38,6 +38,14 @@ pixi run run -- --ingest '**'     # then open http://127.0.0.1:18080/
 ```
 `--ingest '**'` subscribes to everything that has a publisher, which is fine for a demo. On a real site, list the topics you need.
 
+## Authentication
+Give rmf-pipes a Postgres database and it requires login. Users have roles (viewer, operator, admin), and scripts use API tokens:
+```
+export RMF_PIPES_DATABASE_URL=postgres://rmf:…@db:5432/rmf_pipes
+RMF_PIPES_BOOTSTRAP_PASSWORD='…' pixi run run -- --bootstrap-admin admin
+```
+Without a database the API is anonymous, read-only and loopback-only. See [docs/configuration.md](docs/configuration.md).
+
 ## Offline / air-gapped builds
 `--locked` still needs the crates.io index. For a site with no network:
 1. run `cargo vendor` on a connected machine

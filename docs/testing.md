@@ -2,6 +2,8 @@
 
 The goal is that **an agent can verify any change with one command, without ROS or docker.**
 
+Database tests (`#[sqlx::test]`) need Postgres. `pixi run test` starts a throwaway local server from the pixi environment (`scripts/db.sh`, data in `.pixi/pgdata`, port 54329) and sets `DATABASE_URL`. Each test gets a fresh database with the migrations applied. Stop the server with `pixi run db-stop`; delete `.pixi/pgdata` to reset it.
+
 Status: ✅ in place.
 
 | Level | What | Where | Command | Needs |
@@ -10,6 +12,8 @@ Status: ✅ in place.
 | ✅ L1 unit | pure logic: config, serve/drain, JSON mapping (every hiroz `FieldType`, through CDR), type-description conversion (every ROS type id), subscription QoS and publisher choice, pattern matching, graph summaries, hub lifecycle against `FakeBus` with paused time | `#[cfg(test)]` in each crate | `pixi run test` | Rust |
 | ✅ L2 bus (hermetic) | typed hiroz publishers → in-process zenoh router → `HirozBus` (and the hub): graph, decoding, transient_local late join, mismatches, errors, binding to an advertised hash hiroz wouldn't compute | `crates/pipes-testkit/tests/bus.rs` | `pixi run test` | Rust |
 | ✅ L3 API (in-process) | every route and error path against `FakeBus` (`invalid_query`, `invalid_topic`, `no_publisher`, `topic_failed`, `no_sample`, `no_schema`, `too_many_*`, 405); SSE framing, lag, keep-alive, latest-first, final `closed` on shutdown and on topic close, watch released on disconnect; OpenAPI lists every route, every documented path is routed, Swagger validator off; dashboard pages with no external URLs, hostile names escaped | `crates/pipes-api/src/api_tests.rs` | `pixi run test` | Rust |
+| ✅ DB | every `pipes-db` query: users (validation, case-insensitivity, last-admin guard), login checks, sessions (expiry, logout, disable, password change), API tokens (revoke, expiry, owner checks), audit paging and filters; only hashes stored | `crates/pipes-db/src/*.rs` | `pixi run test` | Postgres (pixi) |
+| ✅ L3 auth (in-process) | every protected operation is 401 without credentials, page redirects and `HX-Redirect`, sessions and logout, identical failure responses + audit reasons, login rate limit, tokens and bearer precedence, role checks, CSRF rule, password change, disabled users, anonymous mode | `crates/pipes-api/src/auth_tests.rs` | `pixi run test` | Postgres (pixi) |
 | ✅ L3 e2e (hermetic) | real `rmf-pipes` binary + in-process router + hiroz publisher, HTTP only: `/healthz`, `/metrics`, SIGTERM (idle, and with an SSE client connected), fail-fast without a router, graph, latest, schema, SSE with increasing sequence numbers, standing patterns, docs, dashboard | `crates/rmf-pipes/tests/` | `pixi run test` | Rust |
 | ✅ L4 interop | `ros2 topic pub` (rclpy) on `rmw_zenoh_cpp` via a real `rmw_zenohd` → `HirozBus`: hashes, nested, `uint8[]`, int64, `byte`, `string<=N`, transient_local late join | `crates/pipes-testkit/tests/interop.rs` (`#[ignore]`) | `pixi run interop` | `/opt/ros/$ROS_DISTRO` with rmw_zenoh |
 

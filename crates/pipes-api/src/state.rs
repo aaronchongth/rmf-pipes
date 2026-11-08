@@ -1,6 +1,8 @@
 use std::{fmt, sync::Arc};
 
 use pipes_core::{build_info::BuildInfo, hub::Hub};
+
+use crate::auth::AuthService;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::sync::CancellationToken;
 
@@ -20,6 +22,7 @@ struct Inner {
     metrics: MetricsRender,
     shutdown: CancellationToken,
     streams: Arc<Semaphore>,
+    auth: Option<Arc<AuthService>>,
 }
 
 /// Default for [`AppState::with_max_streams`].
@@ -49,23 +52,42 @@ impl AppState {
                 metrics,
                 shutdown,
                 streams: Arc::new(Semaphore::new(DEFAULT_MAX_STREAMS)),
+                auth: None,
             }),
+        }
+    }
+
+    /// Enable authentication (see [`crate::auth`]). Without it the API is
+    /// anonymous and read-only.
+    #[must_use]
+    pub fn with_auth(self, auth: AuthService) -> Self {
+        self.rebuild(|i| i.auth = Some(Arc::new(auth)))
+    }
+
+    /// The auth service, when enabled.
+    pub fn auth(&self) -> Option<&AuthService> {
+        self.inner.auth.as_deref()
+    }
+
+    fn rebuild(self, f: impl FnOnce(&mut Inner)) -> Self {
+        let mut inner = Inner {
+            build: self.inner.build.clone(),
+            hub: self.inner.hub.clone(),
+            metrics: self.inner.metrics.clone(),
+            shutdown: self.inner.shutdown.clone(),
+            streams: self.inner.streams.clone(),
+            auth: self.inner.auth.clone(),
+        };
+        f(&mut inner);
+        Self {
+            inner: Arc::new(inner),
         }
     }
 
     /// Cap concurrent SSE streams at `max` (default [`DEFAULT_MAX_STREAMS`]).
     #[must_use]
     pub fn with_max_streams(self, max: usize) -> Self {
-        let inner = Inner {
-            build: self.inner.build.clone(),
-            hub: self.inner.hub.clone(),
-            metrics: self.inner.metrics.clone(),
-            shutdown: self.inner.shutdown.clone(),
-            streams: Arc::new(Semaphore::new(max)),
-        };
-        Self {
-            inner: Arc::new(inner),
-        }
+        self.rebuild(|i| i.streams = Arc::new(Semaphore::new(max)))
     }
 
     /// A slot for one SSE stream, held for the stream's lifetime, or `None`

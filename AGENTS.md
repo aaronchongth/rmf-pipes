@@ -15,7 +15,8 @@ Read `docs/architecture.md` before changing structure, and `docs/decisions.md` b
 |---|---|---|
 | `pixi run check` | fmt check, clippy `-D warnings`, all hermetic tests | Rust (rustup) |
 | `pixi run ci` | `check` + dependency invariants + every ROS distro build + distro guard | Rust |
-| `pixi run test` | hermetic tests only | Rust |
+| `pixi run test` | hermetic tests only; starts the local test Postgres first | Rust, pixi |
+| `pixi run db-start` / `db-stop` | the local test Postgres (`DATABASE_URL=postgres://postgres@127.0.0.1:54329/postgres`) | pixi |
 | `pixi run invariants` | only `pipes-bus` uses hiroz/zenoh; each crate's tests compile alone | Rust |
 | `pixi run distros` | build-check each distro feature; zero or two distros must fail | Rust |
 | `pixi run run -- --help` | run the server | Rust |
@@ -30,12 +31,15 @@ Without pixi, the tasks in `pixi.toml` are plain `cargo` commands, so you can ru
 2. **Exactly one ROS distro feature per build.** The default is `lyrical`. Other builds use `--no-default-features --features <distro>`. The guard in `pipes-bus/src/distro.rs` enforces it, and `pixi run invariants` checks hiroz's effective features across the build, including dev-dependencies.
 3. **`hiroz` and `zenoh` are pinned exactly** in the workspace `Cargo.toml`. Upgrade deliberately, in its own commit, gated by the interop tests.
 4. **Never print secrets.**
+   - `--database-url` and `--bootstrap-password` are plain strings, and `pipes_db::Db::connect` reports host, port and database only. Tests prove the password never appears.
+   - API tokens and session secrets are never logged or stored in plaintext; only SHA-256 hashes go to the database.
    - Every env-backed CLI arg sets `hide_env_values`, and a test enforces it.
    - clap echoes rejected values in parse errors, so a secret-bearing arg must be parsed as a plain `String` and validated afterwards with a redacted error.
    - Health responses never include raw dependency errors; log the details instead.
 5. **Every server-side stream ends on shutdown.** The HTTP server has a drain deadline (`pipes-api/src/serve.rs`), but SSE handlers must still watch the shutdown token.
 6. **Bounded everything.** Channels, queues and caches have explicit capacities and a documented drop policy. Nothing subscribes to `**` by default.
-7. **No Node/npm.** The dashboard is server-rendered, and its vendored assets are committed under `crates/pipes-api/assets/`.
+7. **Every route outside `auth::is_public` requires credentials when auth is on.** `auth_tests::every_protected_route_needs_credentials` walks the OpenAPI document to prove it. A new public route must be added to `is_public` deliberately.
+8. **No Node/npm.** The dashboard is server-rendered, and its vendored assets are committed under `crates/pipes-api/assets/`.
 
 ## Testing rules
 - Tests are hermetic by default: no ROS install, no docker, no network beyond localhost. zenoh tests use `pipes_testkit::TestRouter` (an in-process router on a free port) and `fixture_node` (hiroz publishers with type descriptions).

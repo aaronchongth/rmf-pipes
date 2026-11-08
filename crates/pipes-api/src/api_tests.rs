@@ -106,12 +106,21 @@ async fn openapi_documents_every_api_route() {
     assert_eq!(
         paths,
         vec![
+            "/api/v1/audit",
+            "/api/v1/auth/login",
+            "/api/v1/auth/logout",
+            "/api/v1/auth/me",
+            "/api/v1/auth/password",
+            "/api/v1/auth/tokens",
+            "/api/v1/auth/tokens/{id}",
             "/api/v1/graph",
             "/api/v1/topic",
             "/api/v1/topic/latest",
             "/api/v1/topic/schema",
             "/api/v1/topic/stream",
             "/api/v1/topics",
+            "/api/v1/users",
+            "/api/v1/users/{username}",
             "/healthz",
             "/metrics",
         ]

@@ -2,6 +2,27 @@
 
 These are settled decisions, newest first. Reopen one only with new information, and record the change here.
 
+## 2026-11-09: Auth is built in; without a database the API is anonymous and read-only
+- **Users, roles, sessions, API tokens and the audit log live in Postgres** (`pipes-db`, schema `pipes`; sqlx's own `_sqlx_migrations` table is in `public`).
+  - Roles are `viewer` < `operator` < `admin`.
+  - Passwords are argon2id (`password-auth`).
+  - Sessions and tokens are 256-bit random values; only their SHA-256 is stored. Tokens carry an `rp_` prefix.
+  - The last enabled admin can't be demoted, disabled or deleted.
+- **Sessions** are `HttpOnly; SameSite=Strict` cookies with a sliding idle timeout.
+- **CSRF**: cookie-authenticated non-GET requests must be `application/json`.
+- **Bearer tokens** take precedence over cookies: a bad token is a 401, never a silent fallback.
+- **Login limits**: failed password checks (logins and password changes) are counted in a sliding window.
+  - The (username, client address) pair gets 5 per 15 minutes, and each address 50.
+  - There is deliberately **no per-username limit across addresses**, because that would let anyone lock a user out. The trade-off is 5 guesses per address per window against argon2id hashes of passwords with at least 10 characters.
+  - Only the first refusal of each block is audited, and malformed usernames are refused before touching the database, the limiter or the audit log, so unauthenticated callers can't flood either.
+  - Behind a reverse proxy the address is the proxy's; `X-Forwarded-For` is deliberately not trusted.
+- **Account changes are atomic and serialised.** Every user change runs in one transaction with its audit entry, under an advisory lock, so concurrent requests can't remove the last enabled admin and a rejected request changes nothing.
+- **Recovery resets revoke tokens.** An admin or CLI password reset also revokes the user's API tokens; a self-service change keeps them. A token can't mint a token that outlives it. Token lifetimes are 1–3650 days, or unlimited.
+- **Sessions** also have an absolute lifetime (`--session-max`). Logging in again retires the session the browser came with. Known limitation: an open SSE stream keeps running after its session is revoked, until the client disconnects or the server restarts.
+- **Without `--database-url`**, everyone is an anonymous viewer, account and write endpoints answer `503 auth_disabled`, and the binary refuses a non-loopback `--listen` unless `--insecure-no-auth` is given. This keeps the no-dependency dev loop and the existing tests.
+- **Queries are runtime-checked** (`sqlx::query`), not compile-time macros. Every query is exercised by a `#[sqlx::test]` against a fresh database, which avoids the `.sqlx` offline-cache workflow.
+- **OIDC is deferred.** The built-in path covers air-gapped sites. Sites with an identity provider can wait for the OIDC follow-up.
+
 ## 2026-11-08: Bounded on-demand topics and SSE streams
 Any client can ask for any topic name. Without limits, that means unbounded subscriptions and retry tasks. On-demand topics (`--max-topics`) and SSE streams (`--max-streams`) are capped, and the excess gets `503`. Standing topics are configured by the operator, so they don't count toward the cap.
 

@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 pipes-core = { workspace = true, features = ["openapi"] }
+pipes-db = { workspace = true, features = ["openapi"] }
+time.workspace = true
 askama.workspace = true
 axum.workspace = true
 futures.workspace = true
@@ -22,6 +24,7 @@ utoipa-axum.workspace = true
 utoipa-swagger-ui.workspace = true
 
 [dev-dependencies]
+sqlx.workspace = true
 pipes-core = { workspace = true, features = ["fake", "openapi"] }
 http-body-util.workspace = true
 tokio = { workspace = true, features = ["io-util", "test-util"] }

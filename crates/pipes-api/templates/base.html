@@ -30,6 +30,8 @@
   dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
   dt { color: var(--muted); }
   dd { margin: 0; word-break: break-all; }
+  input { font: inherit; padding: 6px 8px; width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  button { font: inherit; padding: 6px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
 </style>
 <script src="/ui/assets/htmx-2.0.11.min.js"></script>
 </head>
@@ -37,8 +39,20 @@
 <header>
   <h1><a href="/">rmf-pipes</a></h1>
   <span class="meta">v{{ version }} · ROS {{ ros_distro }}</span>
-  <nav><a href="/">Graph</a><a href="/docs/">API docs</a><a href="/metrics">Metrics</a></nav>
+  <nav><a href="/">Graph</a><a href="/docs/">API docs</a><a href="/metrics">Metrics</a>
+    {% match user %}{% when Some with (name) %}<span class="muted">{{ name }}</span> <a href="#" id="logout">Log out</a>{% when None %}{% endmatch %}</nav>
 </header>
 {% block content %}{% endblock %}
+<script>
+(function () {
+  var l = document.getElementById("logout");
+  if (!l) return;
+  l.addEventListener("click", function (ev) {
+    ev.preventDefault();
+    fetch("/api/v1/auth/logout", { method: "POST", headers: { "Content-Type": "application/json" } })
+      .then(function () { window.location.assign("/login"); });
+  });
+})();
+</script>
 </body>
 </html>

@@ -35,8 +35,11 @@ pub async fn serve(
     shutdown: CancellationToken,
     drain: Duration,
 ) -> io::Result<ServeOutcome> {
-    let graceful =
-        axum::serve(listener, app).with_graceful_shutdown(shutdown.clone().cancelled_owned());
+    let graceful = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown.clone().cancelled_owned());
     let deadline = async {
         shutdown.cancelled().await;
         tokio::time::sleep(drain).await;

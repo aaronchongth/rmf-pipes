@@ -26,7 +26,8 @@ Browser / scripts ──HTTP──► rmf-pipes only
 | `pipes-bus` | ✅ distro guard, `HirozBus`: session, graph snapshots, dynamic subscriptions, CDR → JSON mapping | Yes (the only one) |
 | `pipes-api` | ✅ REST + SSE under `/api/v1`, OpenAPI (`/openapi.json`, Swagger UI at `/docs/`), dashboard (`/`, `/ui/*`), `/healthz`, `/metrics`, `serve` with drain deadline | **No** |
 | `pipes-testkit` | ✅ in-process zenoh router, hiroz fixture nodes, hermetic bus tests, interop tests (`rmw_zenohd` + `ros2`) | Yes (tests only) |
-| `rmf-pipes` | ✅ binary: config, logging, signals, wiring | No (goes through `pipes-bus`) |
+| `pipes-db` | ✅ Postgres: users, sessions, API tokens, audit log; embedded migrations | **No** |
+| `rmf-pipes` | ✅ binary: config, logging, signals, wiring, `user` CLI | No (goes through `pipes-bus`) |
 
 `pixi run invariants` enforces the last column.
 
@@ -61,6 +62,19 @@ Dependency direction: `rmf-pipes → {pipes-api, pipes-bus} → pipes-core`. `pi
      - It loads no external resources: a test scans every page, inline JS included, for network locations.
      - Topic names from the graph are always HTML-escaped. Names that aren't valid ROS names are shown but not linked.
    - **Metrics**: `/metrics` in Prometheus format.
+
+## Authentication (phase 3)
+- `pipes-api::auth::authenticate` is a middleware on every route. It resolves the caller from `Authorization: Bearer rp_…` or the session cookie, then:
+  - routes not in `auth::is_public` get `401` (API) or a redirect to `/login` (pages; htmx gets `HX-Redirect`);
+  - it enforces the JSON-only rule for cookie writes.
+- Handlers take `Caller` and call `require(Role::…)`.
+- Account endpoints live in `pipes-api::accounts`: login/logout/me/password, tokens, users, audit.
+- What goes to `pipes.audit_log`, from the API and from the `rmf-pipes user` CLI alike:
+  - every login attempt (except repeated rate-limit refusals)
+  - credential changes
+  - role refusals on admin endpoints
+  - user changes, written in the same transaction as the change itself
+- With no database configured, the middleware marks everyone anonymous and the API is read-only.
 
 ## Shutdown
 SIGINT or SIGTERM cancels a `CancellationToken`.

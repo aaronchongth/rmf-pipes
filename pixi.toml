@@ -1,4 +1,4 @@
-# Task runner and (from phase 3) non-Rust tool pins. Rust itself is pinned by
+# Task runner and non-Rust tool pins (Postgres for tests). Rust itself is pinned by
 # rust-toolchain.toml and comes from rustup.
 [workspace]
 name = "rmf-pipes"
@@ -9,7 +9,10 @@ platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
 fmt = "cargo fmt --all"
 fmt-check = "cargo fmt --all --check"
 lint = "cargo clippy --workspace --all-targets --locked -- -D warnings"
-test = "cargo test --workspace --locked"
+# Tests need Postgres: `test` starts the local one (scripts/db.sh) first.
+db-start = "scripts/db.sh start"
+db-stop = "scripts/db.sh stop"
+test = { cmd = "cargo test --workspace --locked", depends-on = ["db-start"], env = { DATABASE_URL = "postgres://postgres@127.0.0.1:54329/postgres" } }
 distros = "scripts/check-distros.sh"
 invariants = "scripts/check-invariants.sh"
 check = { depends-on = ["fmt-check", "lint", "test"] }
@@ -18,3 +21,6 @@ run = "cargo run --locked -p rmf-pipes --"
 # L4: real rmw_zenoh_cpp from /opt/ros/$ROS_DISTRO. Skips loudly if missing,
 # fails instead when PIPES_INTEROP_REQUIRED=1.
 interop = "cargo test --locked -p pipes-testkit --test interop -- --ignored --test-threads=1 --nocapture"
+
+[dependencies]
+postgresql = ">=18.4,<19"
