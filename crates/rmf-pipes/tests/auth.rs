@@ -63,6 +63,19 @@ fn refuses_to_serve_unauthenticated_on_the_network() {
 }
 
 #[test]
+fn demo_mode_refuses_to_serve_on_the_network() {
+    // Not even with --insecure-no-auth: demo callers are admins.
+    let out = cli(
+        &["--demo", "--insecure-no-auth", "--listen", "0.0.0.0:0"],
+        "",
+    );
+    assert!(!out.status.success());
+    let t = text(&out);
+    assert!(t.contains("refusing --demo on 0.0.0.0:0"), "{t}");
+    assert!(!t.contains("\"listening\""));
+}
+
+#[test]
 fn a_bad_database_url_never_leaks_its_password() {
     let router = pipes_testkit::TestRouter::start();
     let secret = "pa55-w0rd-that-must-not-leak";

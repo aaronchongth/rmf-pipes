@@ -26,6 +26,9 @@ struct Inner {
     shutdown: CancellationToken,
     streams: Arc<Semaphore>,
     auth: Option<Arc<AuthService>>,
+    db: Option<pipes_db::Db>,
+    demo: bool,
+    recorder: Option<pipes_core::recorder::Recorder>,
     writes: Arc<WritePolicy>,
     write_limiter: Arc<WriteLimiter>,
 }
@@ -58,17 +61,61 @@ impl AppState {
                 shutdown,
                 streams: Arc::new(Semaphore::new(DEFAULT_MAX_STREAMS)),
                 auth: None,
+                db: None,
+                demo: false,
+                recorder: None,
                 writes: Arc::new(WritePolicy::default()),
                 write_limiter: Arc::new(WriteLimiter::default()),
             }),
         }
     }
 
-    /// Enable authentication (see [`crate::auth`]). Without it the API is
-    /// anonymous and read-only.
+    /// Enable authentication (see [`crate::auth`]), with its database also
+    /// used for the audit log. Without it the API is anonymous and read-only,
+    /// unless [`AppState::with_demo`].
     #[must_use]
     pub fn with_auth(self, auth: AuthService) -> Self {
-        self.rebuild(|i| i.auth = Some(Arc::new(auth)))
+        self.rebuild(|i| {
+            i.db = Some(auth.db.clone());
+            i.auth = Some(Arc::new(auth));
+        })
+    }
+
+    /// Use `db` for the audit log (and recordings) without enabling
+    /// authentication.
+    #[must_use]
+    pub fn with_database(self, db: pipes_db::Db) -> Self {
+        self.rebuild(|i| i.db = Some(db))
+    }
+
+    /// Demo mode: authentication is off and every caller acts as the
+    /// anonymous demo user with the admin role (see [`crate::auth`]). The
+    /// binary only allows it on a loopback address.
+    #[must_use]
+    pub fn with_demo(self) -> Self {
+        self.rebuild(|i| i.demo = true)
+    }
+
+    /// Serve the recorder's rules, streams and records (see
+    /// [`crate::recording`]).
+    #[must_use]
+    pub fn with_recorder(self, recorder: pipes_core::recorder::Recorder) -> Self {
+        self.rebuild(|i| i.recorder = Some(recorder))
+    }
+
+    /// The recorder, when configured.
+    pub fn recorder(&self) -> Option<&pipes_core::recorder::Recorder> {
+        self.inner.recorder.as_ref()
+    }
+
+    /// The database, when one is configured (with or without auth).
+    pub fn db(&self) -> Option<&pipes_db::Db> {
+        self.inner.db.as_ref()
+    }
+
+    /// Whether demo mode is on.
+    pub fn demo(&self) -> bool {
+        self.inner.demo && self.inner.auth.is_none()
     }
 
     /// Set the write allowlist (default: nothing may be written).
@@ -100,6 +147,9 @@ impl AppState {
             shutdown: self.inner.shutdown.clone(),
             streams: self.inner.streams.clone(),
             auth: self.inner.auth.clone(),
+            db: self.inner.db.clone(),
+            demo: self.inner.demo,
+            recorder: self.inner.recorder.clone(),
             writes: self.inner.writes.clone(),
             write_limiter: self.inner.write_limiter.clone(),
         };

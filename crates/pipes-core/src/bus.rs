@@ -32,6 +32,16 @@ pub trait Bus: Send + Sync + fmt::Debug + 'static {
         request: &serde_json::Value,
         timeout: std::time::Duration,
     ) -> Result<Called, WriteError>;
+
+    /// Observe the requests clients send to `service` (including the
+    /// `_action/send_goal` service of an action), without answering them: the
+    /// real server still does, and clients are unaffected. The returned
+    /// [`Subscription`]'s `type_name` is the service type, its `schema` the
+    /// request message, and its `samples` the requests. Dropping it stops
+    /// observing. Fails with [`BusError::NoServer`] when nothing serves the
+    /// service, since there is then nothing to observe and no type to decode
+    /// with. Responses are not observable this way.
+    async fn tap(&self, service: &str) -> Result<Subscription, BusError>;
 }
 
 /// What a publish was bound to.
@@ -177,6 +187,9 @@ pub enum BusError {
     /// Nobody publishes the topic, so there is no schema to discover.
     #[error("no publisher of `{0}` is visible")]
     NoPublisher(String),
+    /// Nothing serves the service, so there is nothing to observe.
+    #[error("no server of `{0}` is visible")]
+    NoServer(String),
     /// Schema discovery failed (e.g. the publisher has no type description service).
     #[error("could not get the schema of `{topic}`: {reason}")]
     Schema {

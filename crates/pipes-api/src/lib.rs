@@ -11,6 +11,7 @@ pub mod auth;
 pub mod error;
 pub mod health;
 pub mod metrics;
+pub mod recording;
 pub mod serve;
 mod state;
 pub mod ui;
@@ -77,6 +78,10 @@ async fn no_route() -> impl IntoResponse {
 mod api_tests;
 #[cfg(test)]
 mod auth_tests;
+#[cfg(test)]
+mod demo_tests;
+#[cfg(test)]
+mod recording_tests;
 #[cfg(test)]
 mod writes_tests;
 

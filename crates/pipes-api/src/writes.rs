@@ -1,14 +1,16 @@
 //! The write path: publishing to topics and calling services on the robot
 //! bus. Every write is:
 //!
-//! 1. **authenticated**: auth must be enabled; anonymous mode is read-only;
+//! 1. **authenticated**: auth must be enabled, or demo mode on (every caller
+//!    is then the demo user); plain anonymous mode is read-only;
 //! 2. **allowlisted**: the target must match a `--allow-publish` /
 //!    `--allow-call` pattern, which also sets the minimum role (default
 //!    operator); when several match, the most permissive applies;
 //! 3. **rate-limited**: at most one write per user per target per
 //!    `--write-interval`;
 //! 4. **audited before it happens**: a `pending` entry (with the payload) is
-//!    written first, and if that fails nothing is sent (fail closed). The
+//!    written first, and if that fails nothing is sent (fail closed). Without
+//!    a database (demo mode only) entries go to the process log instead. The
 //!    write itself then runs in its own task, so a client hanging up can't
 //!    cut it short, and a second entry (`ok`, with the type and hash used, or
 //!    `error`) records how it ended, linked by `detail.intent`.
@@ -34,7 +36,7 @@ use utoipa::ToSchema;
 use crate::{
     AppState,
     accounts::ApiJson,
-    auth::{Caller, Principal, audit},
+    auth::{Caller, Principal, audit, record_audit},
     error::{ApiError, Problem},
 };
 
@@ -235,7 +237,7 @@ fn views(rules: &[WriteRule]) -> Vec<RuleView> {
 pub async fn policy(State(state): State<AppState>) -> Json<PolicyView> {
     let p = state.writes();
     Json(PolicyView {
-        writes_enabled: state.auth().is_some(),
+        writes_enabled: state.auth().is_some() || state.demo(),
         publish: views(&p.publish),
         call: views(&p.call),
         min_interval_ms: p
@@ -340,27 +342,31 @@ async fn authorize(
     name: &str,
     payload: &Value,
 ) -> Result<Ticket, Problem> {
-    let Some(auth) = state.auth() else {
-        return Err(Problem::unavailable(
-            "auth_disabled",
-            "writes need authentication (no --database-url); rmf-pipes is read-only",
-        ));
+    // The demo user (id 0: real ids start at 1) shares one rate-limit bucket.
+    let (actor_id, actor) = match caller {
+        Principal::User { user, .. } => (user.id, user.username.clone()),
+        Principal::Demo => (0, caller.name().to_owned()),
+        Principal::Anonymous if state.auth().is_some() => {
+            return Err(Problem::unauthenticated("log in first"));
+        }
+        Principal::Anonymous => {
+            return Err(Problem::unavailable(
+                "auth_disabled",
+                "writes need authentication (--database-url) or --demo; rmf-pipes is read-only",
+            ));
+        }
     };
-    let user = caller
-        .user()
-        .ok_or_else(|| Problem::unauthenticated("log in first"))?
-        .clone();
     validate_topic(name)?;
     let action = kind.action();
     let limiter = state.write_limiter();
     let deny = |reason: &'static str| {
-        let audited = limiter.audit_denial(user.id, action);
+        let audited = limiter.audit_denial(actor_id, action);
         let entry = caller.audit(action, name, Outcome::Denied, json!({"reason": reason}));
         async move {
             if audited {
                 audit(state, entry).await;
             } else {
-                tracing::debug!(user = %user.username, action, reason, "refusal not audited: per-user budget spent");
+                tracing::debug!(user = %actor, action, reason, "refusal not audited: per-user budget spent");
             }
         }
     };
@@ -381,7 +387,7 @@ async fn authorize(
         return Err(p);
     }
     if let Some(min) = policy.min_interval
-        && let Err(wait) = limiter.admit((user.id, action, name.to_owned()), min)
+        && let Err(wait) = limiter.admit((actor_id, action, name.to_owned()), min)
     {
         deny("rate_limited").await;
         return Err(Problem::too_many(
@@ -405,9 +411,12 @@ async fn authorize(
         Outcome::Pending,
         json!({"payload": payload, "payload_truncated": truncated}),
     );
-    let intent = auth.db.record_audit(&entry).await.map_err(|err| {
-        tracing::error!(%err, %action, target = %name, "cannot write the audit log; refusing the write");
-        Problem::unavailable("audit_unavailable", "the audit log can't be written, so the write was refused")
+    let intent = record_audit(state, &entry).await.map_err(|_| {
+        tracing::error!(%action, target = %name, "cannot write the audit log; refusing the write");
+        Problem::unavailable(
+            "audit_unavailable",
+            "the audit log can't be written, so the write was refused",
+        )
     })?;
     Ok(Ticket {
         intent,

@@ -38,6 +38,8 @@ pub fn routes() -> Router<AppState> {
         .route("/ui/topic", get(topic_page))
         .route("/ui/fragments/overview", get(overview))
         .route("/ui/fragments/topic", get(topic_info))
+        .route("/ui/recording", get(recording_page))
+        .route("/ui/fragments/recording", get(recording_fragment))
         .route(HTMX_PATH, get(htmx))
 }
 
@@ -47,6 +49,7 @@ struct IndexPage {
     version: &'static str,
     ros_distro: &'static str,
     user: Option<String>,
+    demo: bool,
 }
 
 #[derive(Template)]
@@ -55,6 +58,7 @@ struct TopicPage {
     version: &'static str,
     ros_distro: &'static str,
     user: Option<String>,
+    demo: bool,
     name: String,
 }
 
@@ -64,6 +68,7 @@ struct LoginPage {
     version: &'static str,
     ros_distro: &'static str,
     user: Option<String>,
+    demo: bool,
     next: String,
 }
 
@@ -128,6 +133,7 @@ async fn index(State(state): State<AppState>, Caller(caller): Caller) -> Respons
         version: b.version,
         ros_distro: b.ros_distro,
         user: caller.user().map(|u| u.username.clone()),
+        demo: state.demo(),
     })
 }
 
@@ -141,6 +147,7 @@ async fn login_page(State(state): State<AppState>, ApiQuery(q): ApiQuery<LoginQu
         version: b.version,
         ros_distro: b.ros_distro,
         user: None,
+        demo: false,
         next: safe_next(q.next.as_deref()),
     })
 }
@@ -156,6 +163,7 @@ async fn topic_page(
         version: b.version,
         ros_distro: b.ros_distro,
         user: caller.user().map(|u| u.username.clone()),
+        demo: state.demo(),
         name: q.name,
     }))
 }
@@ -223,6 +231,148 @@ async fn topic_info(State(state): State<AppState>, ApiQuery(q): ApiQuery<TopicQu
         publishers,
         subscription: hub.topic(&q.name),
     })
+}
+
+#[derive(Template)]
+#[template(path = "recording.html")]
+struct RecordingPage {
+    version: &'static str,
+    ros_distro: &'static str,
+    user: Option<String>,
+    demo: bool,
+    /// The rules as pretty JSON, for the editor.
+    rules_json: String,
+    enabled: bool,
+}
+
+#[derive(Template)]
+#[template(path = "recording_fragment.html")]
+struct RecordingFragment {
+    database: bool,
+    skipped: usize,
+    streams: Vec<StreamRow>,
+    records: Vec<RecordRow>,
+}
+
+struct StreamRow {
+    rule: String,
+    name: String,
+    source: &'static str,
+    observes: String,
+    state: String,
+    failed: bool,
+    recorded: u64,
+    dropped: u64,
+}
+
+struct RecordRow {
+    at: String,
+    rule: String,
+    name: String,
+    part: &'static str,
+    goal_id: String,
+    data: String,
+}
+
+/// Records shown on the recording page.
+const RECORDING_ROWS: usize = 30;
+/// Longest payload shown per record on the recording page.
+const RECORDING_DATA_MAX: usize = 300;
+
+async fn recording_page(State(state): State<AppState>, Caller(caller): Caller) -> Response {
+    let b = state.build();
+    let rules = state
+        .recorder()
+        .map(|r| r.rules().as_ref().clone())
+        .unwrap_or_default();
+    render(&RecordingPage {
+        version: b.version,
+        ros_distro: b.ros_distro,
+        user: caller.user().map(|u| u.username.clone()),
+        demo: state.demo(),
+        rules_json: serde_json::to_string_pretty(&serde_json::json!({ "rules": rules }))
+            .unwrap_or_default(),
+        enabled: state.recorder().is_some(),
+    })
+}
+
+async fn recording_fragment(State(state): State<AppState>) -> Response {
+    use pipes_core::recorder::{Source, StreamState};
+    let Some(rec) = state.recorder() else {
+        return render(&RecordingFragment {
+            database: false,
+            skipped: 0,
+            streams: vec![],
+            records: vec![],
+        });
+    };
+    let view = rec.view();
+    let streams = view
+        .streams
+        .into_iter()
+        .map(|s| {
+            let (state, failed) = match s.status {
+                StreamState::Opening => ("opening".to_owned(), false),
+                StreamState::Active => ("active".to_owned(), false),
+                StreamState::Failed { error } => (format!("failed: {error}"), true),
+            };
+            StreamRow {
+                rule: s.rule,
+                name: s.name,
+                source: match s.source {
+                    Source::Message => "message",
+                    Source::Request => "request",
+                    Source::Goal => "goal",
+                    Source::Feedback => "feedback",
+                    Source::Status => "status",
+                },
+                observes: s.observes,
+                state,
+                failed,
+                recorded: s.recorded,
+                dropped: s.dropped,
+            }
+        })
+        .collect();
+    let fmt = time::macros::format_description!("[hour]:[minute]:[second].[subsecond digits:3]");
+    let records = rec
+        .recent(RECORDING_ROWS)
+        .iter()
+        .map(|r| RecordRow {
+            at: r.at.format(&fmt).unwrap_or_default(),
+            rule: r.rule.clone(),
+            name: r.name.clone(),
+            part: r.part.as_str(),
+            goal_id: r
+                .goal_id
+                .as_deref()
+                .map(|g| g.chars().take(8).collect())
+                .unwrap_or_default(),
+            data: clip(
+                &r.data
+                    .as_ref()
+                    .map_or_else(|| "null".to_owned(), ToString::to_string),
+                RECORDING_DATA_MAX,
+            ),
+        })
+        .collect();
+    render(&RecordingFragment {
+        database: view.database,
+        skipped: view.skipped,
+        streams,
+        records,
+    })
+}
+
+fn clip(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_owned();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// Where to go after login: only a local absolute path. Anything that a

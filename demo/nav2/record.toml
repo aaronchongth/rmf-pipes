@@ -1,0 +1,25 @@
+# Recording rules for the Nav2 demo (`pixi run demo`). The same rules can be
+# replaced at runtime from the dashboard's Recording page or with
+# `PUT /api/v1/recording/rules`; see docs/recording.md.
+#
+# `/*/navigate_to_pose` matches each robot's outer action (served by the
+# prototype's rmf_nav2_traffic node: /robot0/navigate_to_pose,
+# /robot1/navigate_to_pose), not Nav2's own `/robotN/inner/navigate_to_pose`.
+
+# What was asked, how it went, and how it ended: to the console and the database.
+[[rules]]
+name = "nav-goals"
+match = "/*/navigate_to_pose"
+kind = "action"
+parts = ["goal", "status", "result"]
+sinks = ["console", "database"]
+
+# Feedback is chatty (several messages a second per robot): database only, at
+# most one per second per robot.
+[[rules]]
+name = "nav-feedback"
+match = "/*/navigate_to_pose"
+kind = "action"
+parts = ["feedback"]
+sinks = ["database"]
+max_rate_hz = 1.0

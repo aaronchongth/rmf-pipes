@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Recording · rmf-pipes{% endblock %}
+{% block content %}
+{% if enabled %}
+<h2>Rules</h2>
+<p class="muted">What to record (<code>topic</code> messages, <code>service</code> requests, <code>action</code> goals, feedback, statuses and results) and where to (<code>console</code>, <code>database</code>). Saving replaces every rule at once (admin); see <a href="/docs/">PUT /api/v1/recording/rules</a> for the format.</p>
+<textarea id="rules" spellcheck="false">{{ rules_json }}</textarea>
+<p><button id="save">Save rules</button> <span id="saved" class="muted"></span></p>
+<div id="recording" hx-get="/ui/fragments/recording" hx-trigger="load, every 2s" hx-swap="innerHTML">
+  <p class="muted">Loading…</p>
+</div>
+<script>
+(function () {
+  var out = document.getElementById("saved");
+  document.getElementById("save").addEventListener("click", function () {
+    var body;
+    try { body = JSON.parse(document.getElementById("rules").value); }
+    catch (e) { out.className = "bad"; out.textContent = "not valid JSON: " + e.message; return; }
+    out.className = "muted"; out.textContent = "saving…";
+    fetch("/api/v1/recording/rules", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json().then(function (j) { return [r.ok, j]; }); })
+      .then(function (res) {
+        if (res[0]) { out.className = "good"; out.textContent = "saved: " + res[1].length + " rule(s)"; document.getElementById("rules").value = JSON.stringify({ rules: res[1] }, null, 2); }
+        else { out.className = "bad"; out.textContent = res[1].message || "refused"; }
+      })
+      .catch(function (e) { out.className = "bad"; out.textContent = String(e); });
+  });
+})();
+</script>
+{% else %}
+<p class="muted">Recording is not configured.</p>
+{% endif %}
+{% endblock %}

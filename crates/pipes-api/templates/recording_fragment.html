@@ -1,0 +1,42 @@
+<h2>Streams</h2>
+<p class="muted">Database sink: {% if database %}<span class="good">available</span>{% else %}not configured{% endif %}{% if skipped > 0 %} · <span class="warn">{{ skipped }} match(es) skipped: stream limit reached</span>{% endif %}</p>
+<div class="scroll">
+<table>
+  <thead><tr><th>Rule</th><th>Target</th><th>Source</th><th>Observes</th><th>State</th><th class="num">Recorded</th><th class="num">Dropped</th></tr></thead>
+  <tbody>
+  {% for s in streams %}
+    <tr>
+      <td>{{ s.rule }}</td>
+      <td><code>{{ s.name }}</code></td>
+      <td>{{ s.source }}</td>
+      <td><code>{{ s.observes }}</code></td>
+      <td{% if s.failed %} class="bad"{% endif %}>{{ s.state }}</td>
+      <td class="num">{{ s.recorded }}</td>
+      <td class="num">{{ s.dropped }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="muted">No streams: no rule matches anything in the graph yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+<h2>Latest records</h2>
+<div class="scroll">
+<table>
+  <thead><tr><th>Time (UTC)</th><th>Rule</th><th>Target</th><th>Part</th><th>Goal</th><th>Data</th></tr></thead>
+  <tbody>
+  {% for r in records %}
+    <tr>
+      <td><code>{{ r.at }}</code></td>
+      <td>{{ r.rule }}</td>
+      <td><code>{{ r.name }}</code></td>
+      <td>{{ r.part }}</td>
+      <td><code>{{ r.goal_id }}</code></td>
+      <td><code>{{ r.data }}</code></td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="muted">Nothing recorded yet.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>

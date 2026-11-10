@@ -7,6 +7,7 @@ rmf-pipes is the data layer for next-generation Open-RMF. It's a Rust server tha
 - watches the ROS 2 graph over zenoh, using [hiroz](https://github.com/ZettaScaleLabs/hiroz) and rmw_zenoh conventions
 - decodes messages at runtime
 - serves them over REST, SSE, OpenAPI and a small introspection dashboard
+- records chosen topics, service requests and action parts to the console or Postgres (`docs/recording.md`)
 
 Read `docs/architecture.md` before changing structure, and `docs/decisions.md` before reopening a settled question.
 
@@ -20,7 +21,8 @@ Read `docs/architecture.md` before changing structure, and `docs/decisions.md` b
 | `pixi run invariants` | only `pipes-bus` uses hiroz/zenoh; each crate's tests compile alone | Rust |
 | `pixi run distros` | build-check each distro feature; zero or two distros must fail | Rust |
 | `pixi run run -- --help` | run the server | Rust |
-| `pixi run interop` | L4 tests against a real `rmw_zenohd` + `ros2 topic pub` (skips loudly without ROS) | `/opt/ros/<distro>` with rmw_zenoh |
+| `pixi run interop` | L4 tests against a real `rmw_zenohd` + `ros2` CLI and rclpy nodes (skips loudly without ROS) | `/opt/ros/<distro>` with rmw_zenoh |
+| `pixi run demo-up` / `demo` / `demo-check` / `demo-down` | the Nav2 demo: next_gen_prototype's stack in Docker, rmf-pipes in `--demo` mode on the host, and an end-to-end check (`demo/nav2/README.md`) | Docker, `../next_gen_prototype` |
 
 Without pixi, the tasks in `pixi.toml` are plain `cargo` commands, so you can run them directly.
 
@@ -37,9 +39,11 @@ Without pixi, the tasks in `pixi.toml` are plain `cargo` commands, so you can ru
    - clap echoes rejected values in parse errors, so a secret-bearing arg must be parsed as a plain `String` and validated afterwards with a redacted error.
    - Health responses never include raw dependency errors; log the details instead.
 5. **Every server-side stream ends on shutdown.** The HTTP server has a drain deadline (`pipes-api/src/serve.rs`), but SSE handlers must still watch the shutdown token.
-6. **Bounded everything.** Channels, queues and caches have explicit capacities and a documented drop policy. Nothing subscribes to `**` by default.
+6. **Bounded everything.** Channels, queues and caches have explicit capacities and a documented drop policy. Nothing subscribes to `**` by default, and nothing is recorded or tapped without a rule.
 7. **Every route outside `auth::is_public` requires credentials when auth is on.** `auth_tests::every_protected_route_needs_credentials` walks the OpenAPI document to prove it. A new public route must be added to `is_public` deliberately.
 8. **No Node/npm.** The dashboard is server-rendered, and its vendored assets are committed under `crates/pipes-api/assets/`.
+9. **Taps are passive and rule-scoped.** `Bus::tap` queryables are `complete`, never reply, and exist only for services matched by a recording rule that have a server. No API input becomes a tapped key expression.
+10. **Demo mode is loopback-only.** `--demo` makes every caller an admin; the binary refuses it on a non-loopback address, and the CSRF (JSON-only) rule covers every non-GET request in that mode.
 
 ## Testing rules
 - Tests are hermetic by default: no ROS install, no docker, no network beyond localhost. zenoh tests use `pipes_testkit::TestRouter` (an in-process router on a free port) and `fixture_node` (hiroz publishers with type descriptions).

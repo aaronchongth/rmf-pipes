@@ -8,25 +8,29 @@ Status markers: ✅ built · 🚧 in progress · 📋 planned. See `roadmap.md`.
 ROS 2 nodes (rmw_zenoh_cpp) ──► zenoh router (rmw_zenohd) ◄── rmf-pipes (hiroz session, client mode)
                                                                 ├─ graph watcher (liveliness)
                                                                 ├─ topic hub: latest sample + fan-out (memory)
+                                                                ├─ recorder: rules → streams (hub watches, request taps, get_result)
+                                                                │     └─ sinks: console (log) · database (batched)
+                                                                ├─ write path: allowlisted publish / call, audited
                                                                 └─ HTTP: REST · SSE · /openapi.json · /docs · dashboard · /metrics
-Browser / scripts ──HTTP──► rmf-pipes only
+Browser / scripts ──HTTP──► rmf-pipes only                     Postgres: users, sessions, tokens, audit log, records
 ```
 
-- **Phases 0–2** cover the read-only live data plane. Nothing is persisted.
-- **Later phases** add:
-  - auth (Postgres)
-  - an audited write path
-  - the zenoh Postgres storage backend, which runs in a separate zenohd so it can't stall robot traffic
+- **Built:**
+  - ✅ the live data plane (phases 0–2)
+  - ✅ auth (phase 3)
+  - ✅ the audited write path (phase 4)
+  - ✅ demo mode and recording (phase 4.5)
+- **Next:** the zenoh Postgres storage backend, which runs in a separate zenohd so it can't stall robot traffic.
 
 ## Crates
 
 | Crate | Role | May depend on hiroz/zenoh? |
 |---|---|---|
-| `pipes-core` | ✅ data model (graph, samples, schema), `Bus` trait + `FakeBus`, topic hub, pattern matching, metrics | **No** |
-| `pipes-bus` | ✅ distro guard, `HirozBus`: session, graph snapshots, dynamic subscriptions, CDR → JSON mapping | Yes (the only one) |
-| `pipes-api` | ✅ REST + SSE under `/api/v1`, OpenAPI (`/openapi.json`, Swagger UI at `/docs/`), dashboard (`/`, `/ui/*`), `/healthz`, `/metrics`, `serve` with drain deadline | **No** |
+| `pipes-core` | ✅ data model (graph, samples, schema), `Bus` trait + `FakeBus`, topic hub, recording rules + recorder + console sink, pattern matching, metrics | **No** |
+| `pipes-bus` | ✅ distro guard, `HirozBus`: session, graph snapshots, dynamic subscriptions, request taps, writes, CDR ↔ JSON mapping | Yes (the only one) |
+| `pipes-api` | ✅ REST + SSE under `/api/v1`, OpenAPI (`/openapi.json`, Swagger UI at `/docs/`), dashboard (`/`, `/ui/*`), auth, writes, recording API + database sink, `/healthz`, `/metrics`, `serve` with drain deadline | **No** |
 | `pipes-testkit` | ✅ in-process zenoh router, hiroz fixture nodes, hermetic bus tests, interop tests (`rmw_zenohd` + `ros2`) | Yes (tests only) |
-| `pipes-db` | ✅ Postgres: users, sessions, API tokens, audit log; embedded migrations | **No** |
+| `pipes-db` | ✅ Postgres: users, sessions, API tokens, audit log, records; embedded migrations | **No** |
 | `rmf-pipes` | ✅ binary: config, logging, signals, wiring, `user` CLI | No (goes through `pipes-bus`) |
 
 `pixi run invariants` enforces the last column.
@@ -40,7 +44,7 @@ Dependency direction: `rmf-pipes → {pipes-api, pipes-bus} → pipes-core`. `pi
    - **Standing**: topics with publishers that match `--ingest` patterns. The patterns use the `*`/`**` subset of zenoh key-expression syntax over topic names, e.g. `fleet/*/state`.
    - **On demand**: opened when a client asks for a topic. They're ref-counted, and closed after an idle timeout once the last client leaves.
 
-   Either way, `pipes-bus` asks a publisher's `~/get_type_description` service for the schema. It converts the answer with its own type-id table (`type_desc.rs`), because hiroz 0.2.1's converter misses `byte`, `char` and bounded strings. It then opens a hiroz dynamic subscription bound to the **publishers' advertised type hash**. The subscription is reliable if any publisher is, and transient_local if any is, so late-join history is never lost.
+   Either way, `pipes-bus` asks a publisher's `~/get_type_description` service for the schema, then, if none answers, up to 3 other nodes using the same (type, hash). Answers are cached by (type, hash). It converts the answer with its own type-id table (`type_desc.rs`), because hiroz 0.2.1's converter misses `byte`, `char` and bounded strings. It then opens a hiroz dynamic subscription bound to the **publishers' advertised type hash**. The subscription is reliable if any publisher is, and transient_local if any is, so late-join history is never lost.
    - The subscription is rebuilt automatically if the publishers' hash changes.
    - A failed open is retried while someone is still interested. The delay starts at `retry_after` and doubles up to `max_retry_after`.
    - When an entry closes (idle, or shutdown), watchers get a final `closed` status and their stream ends.
@@ -75,6 +79,7 @@ Dependency direction: `rmf-pipes → {pipes-api, pipes-bus} → pipes-core`. `pi
   - role refusals on admin endpoints
   - user changes, written in the same transaction as the change itself
 - With no database configured, the middleware marks everyone anonymous and the API is read-only.
+- In demo mode (`--demo`, loopback only) the middleware marks everyone `Principal::Demo` (admin role, no account) and applies the JSON-only rule to every non-GET request. A database, if configured, is used for the audit log and records but not for auth (`AppState::with_database`). `auth::record_audit` writes to it, or to the process log under `rmf_pipes::audit` without one.
 
 ## Writes (phase 4)
 `pipes-api::writes` handles every write the same way: it checks authentication, the allowlist and the role (with audited refusals), then the per-user/target rate limit, then **writes the audit entry**, then calls `Bus::publish` / `Bus::call`.
@@ -83,9 +88,21 @@ In `pipes-bus`:
 - `publish` picks the one type the subscribers advertise (refusing if there's more than one), fetches its schema (cached, discovery bounded, failures cached for 10 s), builds the message strictly from JSON (`json::json_to_message`, honouring defaults), and publishes on a cached publisher bound to that hash. Publishers idle for 60 s are undeclared.
 - `call` does the same for the service's single server (refusing if there are several), through a cached `ZClient<RawService>`.
 
+## Recording (phase 4.5)
+See [recording.md](recording.md) for the user-facing behaviour.
+- `pipes-core::record` defines rules, records and the `RecordSink` trait. `ConsoleSink` logs under `rmf_pipes::record`.
+- `pipes-core::recorder::Recorder` ticks once a second against the hub's graph. It turns rules into a bounded set of streams, each a task keyed by (rule, target, source), and reconciles them: it starts new ones, stops ones whose target, rule or rule settings went away, and retries ended ones after 5 s. The kinds of stream:
+  - **message**, **feedback** and **status** streams are `Hub::watch_pinned` watches, so they share the hub's subscription, caps, and transient-local handling with the API, but don't use up its `--max-topics` slots.
+  - **request** and **goal** streams use `Bus::tap`.
+  - **status** streams diff `GoalStatusArray` snapshots per goal and, for finished goals, call `get_result` through `Bus::call`: at most 8 at once overall, at most 64 waiting per stream, in a `JoinSet` owned by the stream so they end with it.
+- `Bus::tap` in `pipes-bus` declares a `complete` zenoh queryable on the server's exact rmw_zenoh key (`KeyExprFormat::topic_key_expr` of the server entity), never replies, and drops each query on receipt. Its buffer is a 64-entry ring that drops the oldest.
+- `pipes-api::recording::DbSink` is a 10 000-record bounded channel. A writer task inserts in batches with one `UNNEST` statement (`pipes-db::records`), and drains the buffer on shutdown after the recorder has stopped.
+- Recent records (200) are kept in memory for the API and dashboard.
+
 ## Shutdown
 SIGINT or SIGTERM cancels a `CancellationToken`.
 - The HTTP server stops accepting connections.
 - SSE streams end themselves.
 - `serve` waits at most `--shutdown-drain`, then abandons stragglers.
-- Bus subscriptions are dropped with the runtime.
+- The recorder stops its streams, then the database sink writes what is buffered, then the hub closes its topics; each step waits at most `--shutdown-drain`.
+- Bus subscriptions and taps are dropped with the runtime.

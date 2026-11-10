@@ -328,3 +328,142 @@ async fn omitted_fields_get_the_messages_defaults() {
     assert!(out.contains("w: 1.0"), "w should default to 1.0:\n{out}");
     assert!(out.contains("z: 0.5"), "{out}");
 }
+
+/// rclpy action server whose result echoes the goal, with one feedback.
+const ACTION_SERVER: &str = r#"
+import time, rclpy
+from rclpy.node import Node
+from rclpy.action import ActionServer
+from tf2_msgs.action import LookupTransform
+rclpy.init()
+n = Node("interop_action_server")
+def cb(h):
+    h.publish_feedback(LookupTransform.Feedback())
+    time.sleep(0.5)
+    h.succeed()
+    r = LookupTransform.Result()
+    r.error.error_string = "done:" + h.request.target_frame
+    return r
+s = ActionServer(n, LookupTransform, "/interop_lookup", cb)
+rclpy.spin(n)
+"#;
+
+#[derive(Debug, Default)]
+struct Collect(std::sync::Mutex<Vec<Arc<pipes_core::record::Record>>>);
+
+impl pipes_core::record::RecordSink for Collect {
+    fn accept(&self, r: &Arc<pipes_core::record::Record>) {
+        self.0.lock().unwrap().push(r.clone());
+    }
+}
+
+/// The recorder observes an action's goal (tapped, without disturbing the
+/// rclpy server or the `ros2 action` client), feedback, status changes and
+/// result, all under the goal id the client was given.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "needs a ROS 2 install with rmw_zenoh; run with `pixi run interop`"]
+async fn action_goals_feedback_statuses_and_results_are_recorded() {
+    use pipes_core::{
+        hub::{Hub, HubConfig},
+        record::Part,
+        recorder::{Recorder, RecorderConfig, Sinks, StreamState},
+    };
+    init_logging();
+    let Some(ros) = RosEnv::require_or_skip("interop") else {
+        return;
+    };
+    let port = free_port();
+    let _router = ros.router(port);
+    let _server = ros.python(port, ACTION_SERVER);
+    let endpoint = format!("tcp/127.0.0.1:{port}");
+    let bus = Arc::new(HirozBus::connect(bus_config(&endpoint)).unwrap());
+    let hub = Hub::new(bus.clone(), HubConfig::default());
+    let sink = Arc::new(Collect::default());
+    let rules = serde_json::from_value(json!([
+        {"name": "lookup", "match": "interop_lookup", "kind": "action", "sinks": ["console"]}
+    ]))
+    .unwrap();
+    let rec = Recorder::new(
+        hub.clone(),
+        RecorderConfig::default(),
+        Sinks {
+            console: sink.clone(),
+            database: None,
+        },
+        rules,
+    )
+    .unwrap();
+    let stop = tokio_util::sync::CancellationToken::new();
+    let _hub_task = hub.spawn(stop.clone());
+    let _rec_task = rec.spawn(stop.clone());
+    wait_until(T, "three active recording streams", || {
+        let v = rec.view();
+        async move {
+            let active = v
+                .streams
+                .iter()
+                .filter(|s| s.status == StreamState::Active)
+                .count();
+            (active == 3)
+                .then_some(())
+                .ok_or_else(|| format!("{:?}", v.streams))
+        }
+    })
+    .await;
+
+    let out = ros
+        .ros2_capture(
+            port,
+            r#"action send_goal /interop_lookup tf2_msgs/action/LookupTransform "{target_frame: map_interop, source_frame: base}""#,
+        )
+        .wait_output(T);
+    assert!(
+        out.contains("done:map_interop"),
+        "the client still gets the real result: {out}"
+    );
+    let client_id = out
+        .lines()
+        .find_map(|l| l.strip_prefix("Goal accepted with ID: "))
+        .expect("goal id in the CLI output")
+        .trim()
+        .to_owned();
+
+    let records = wait_until(T, "goal, feedback, succeeded status and result", || {
+        let recs = sink.0.lock().unwrap().clone();
+        async move {
+            let has = |p: Part| recs.iter().any(|r| r.part == p);
+            let done = recs.iter().any(|r| {
+                r.part == Part::Status
+                    && r.data.as_ref().is_some_and(|d| d["status"] == "succeeded")
+            });
+            (has(Part::Goal) && has(Part::Feedback) && has(Part::Result) && done)
+                .then_some(recs.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "{:?}",
+                        recs.iter()
+                            .map(|r| (r.part, r.data.clone()))
+                            .collect::<Vec<_>>()
+                    )
+                })
+        }
+    })
+    .await;
+    let goal = records.iter().find(|r| r.part == Part::Goal).unwrap();
+    assert_eq!(goal.type_name, "tf2_msgs/action/LookupTransform");
+    assert_eq!(goal.data.as_ref().unwrap()["target_frame"], "map_interop");
+    let result = records.iter().find(|r| r.part == Part::Result).unwrap();
+    assert_eq!(
+        result.data.as_ref().unwrap()["result"]["error"]["error_string"],
+        "done:map_interop"
+    );
+    assert_eq!(result.data.as_ref().unwrap()["status"], "succeeded");
+    for r in &records {
+        assert_eq!(
+            r.goal_id.as_deref().map(|g| g.replace('-', "")),
+            Some(client_id.clone()),
+            "every record carries the client's goal id: {r:?}"
+        );
+    }
+    stop.cancel();
+}

@@ -1,0 +1,16 @@
+# Layered on next_gen_prototype's docker compose (see demo/nav2/README.md):
+# the robots talk rmw_zenoh through one router, which is also published on the
+# host's loopback so rmf-pipes (running on the host) can join.
+services:
+  zenoh_router:
+    # The image's own rmw_zenohd, so the router's zenoh version always matches
+    # the robots' (instead of eclipse/zenoh:latest).
+    image: ros2_rust_base:jazzy
+    command:
+      - bash
+      - -c
+      - source /opt/ros/jazzy/setup.bash && exec ros2 run rmw_zenoh_cpp rmw_zenohd
+    environment:
+      ZENOH_CONFIG_OVERRIDE: 'listen/endpoints=["tcp/0.0.0.0:7447"];scouting/multicast/enabled=false'
+    ports:
+      - "127.0.0.1:${PIPES_DEMO_ZENOH_PORT:-7447}:7447"

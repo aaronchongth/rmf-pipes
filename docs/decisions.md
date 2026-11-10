@@ -2,6 +2,39 @@
 
 These are settled decisions, newest first. Reopen one only with new information, and record the change here.
 
+## 2026-11-10: A local end-to-end demo before more security work
+The maintainer reprioritised: first demo the whole stack running locally, without worrying about auth, then continue. The auth and write path (phases 3–4) stay. The new work is:
+- **Demo mode** (`--demo`): no login, and every caller is `Principal::Demo` with the admin role, so allowlisted writes and rule changes work. The allowlist, the rate limit and the audit trail still apply.
+- **Guards on demo mode:**
+  - It only listens on loopback. `--insecure-no-auth` doesn't override that, because these callers are admins, not viewers.
+  - Every non-GET request must be `application/json`, the same CSRF rule as cookie sessions, because any web page could otherwise post to a localhost port.
+  - Every request must be addressed to `localhost` or a loopback IP, and a browser `Origin` must name that same host. Otherwise a page could re-point its own domain at 127.0.0.1 (DNS rebinding) and make same-origin JSON requests. Requests without `Host` aren't from browsers and are allowed.
+  - Account endpoints answer `503 auth_disabled`.
+- **The database no longer implies auth.** `--database-url` holds the audit log and records, and enables auth unless `--demo` (`AppState::with_database`). Without a database, demo-mode audit entries go to the process log.
+- **The demo uses next_gen_prototype's Nav2 stack, unmodified.** It runs in Docker, on Jazzy with rmw_zenoh, with rmf-pipes' own compose override layered on top. The override replaces `eclipse/zenoh:latest` with the image's own `rmw_zenohd`, so the router's zenoh version always matches the robots'. rmf-pipes runs on the host, built for Jazzy. `pixi run demo-check` checks it end to end, but stays out of CI because it needs Docker and the prototype.
+
+## 2026-11-10: Services and action goals are observed with taps, not by relaying
+The maintainer chose hiroz so that rmf-pipes can see anything on rmw_zenoh. Action goals and service requests are zenoh queries that only the server receives. Rather than routing goals through rmf-pipes, `Bus::tap` declares a **complete** zenoh queryable on the server's exact key. It never replies, and drops each query at once.
+- **Verified on Lyrical (0.10.6) and Jazzy (0.2.11) rmw_zenoh**, with rclpy, rclcpp and rclrs servers: the tap sees the full request, and clients still get the real response with unchanged latency. A *non-complete* queryable sees nothing, because rmw_zenoh clients query `AllComplete`.
+- **Risk**: a non-ROS zenoh `get` with the default `BestMatching` target could be routed to the tap alone. That's why taps are created only for rule-matched services that have a server, never from an API-supplied key.
+- **Responses aren't observable.** Action results come from our own `get_result` call once the status topic says a goal finished. Feedback and status are ordinary topics.
+
+## 2026-11-10: Recording stores decoded JSON in Postgres, ahead of the zenoh storage backend
+Recording rules (`docs/recording.md`) send records to the console or to `pipes.records`, as decoded JSON (`jsonb`) keyed by ROS names. That's what SQL, Grafana and the demo need. The zenoh Postgres storage backend (phase 5) stores raw CDR under zenoh key expressions for generic zenoh `get`s, and stays the upstream contribution, after this.
+- **Rules are runtime state.** `--record-config` (TOML) seeds them, and `PUT /api/v1/recording/rules` (admin, audited) replaces them until the next restart. The file is never rewritten, so the configuration on disk is always what the operator wrote.
+- **Bounded:**
+  - ≤ 64 rules
+  - ≤ `--max-record-streams` streams (skips are reported)
+  - ≤ 8 `get_result` calls in flight
+  - a 10 000-record database buffer that drops new records, counted, when full, so the bus is never slowed
+  - 200 recent records in memory
+- **Already-finished goals in a status stream's first snapshot are a baseline**, not records, so a restart doesn't re-record transient-local history. A restarted stream re-baselines too: goals that finished while it was down aren't recorded. Persisting trackers across restarts wasn't worth the state.
+- **Rule changes fail closed, like writes**: the audit entry is written before the change takes effect.
+- **Recording doesn't compete with API clients for hub topics.** Its watches are pinned (`Hub::watch_pinned`) and bounded by `--max-record-streams`, not `--max-topics`.
+
+## 2026-11-10: Type descriptions fall back to any node using the type
+rclrs nodes, such as next_gen_prototype's `nav2_traffic`, never answer `~/get_type_description`, so their topics couldn't be decoded. Descriptions are per (type, hash), so `pipes-bus` now asks the target's own endpoints first, then up to 3 other nodes that use the same type and hash, and caches successes. Subscriptions use the same cache; they used to fetch every time.
+
 ## 2026-11-09: Writes are allowlisted, rate-limited and audited before they happen
 - `POST /api/v1/topic/publish` and `POST /api/v1/service/call` need authentication; anonymous mode is read-only.
 - The target must match an `--allow-publish` / `--allow-call` pattern. The pattern sets the minimum role (operator by default, `=admin` to restrict). When several match, the most permissive applies. An empty allowlist means nothing can be written.

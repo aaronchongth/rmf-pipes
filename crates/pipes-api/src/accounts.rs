@@ -31,13 +31,16 @@ pub struct Login {
 /// Who the caller is.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct Me {
-    /// Whether authentication is enabled (a database is configured).
+    /// Whether authentication is enabled (a database is configured, and not
+    /// in demo mode).
     pub auth_enabled: bool,
+    /// Demo mode: no authentication, and every caller acts as an admin.
+    pub demo: bool,
     /// The user; `null` when auth is disabled.
     pub user: Option<User>,
     /// The caller's effective role.
     pub role: Role,
-    /// `session`, `token:<id>` or `none`.
+    /// `session`, `token:<id>`, `demo` or `none`.
     pub auth_method: String,
 }
 
@@ -153,6 +156,7 @@ pub async fn login(
     .await;
     let body = Me {
         auth_enabled: true,
+        demo: false,
         role: user.role,
         user: Some(user),
         auth_method: "session".into(),
@@ -206,6 +210,7 @@ pub async fn logout(
 pub async fn me(State(state): State<AppState>, Caller(caller): Caller) -> Json<Me> {
     Json(Me {
         auth_enabled: state.auth().is_some(),
+        demo: state.demo(),
         user: caller.user().cloned(),
         role: caller.role(),
         auth_method: caller.method(),
@@ -600,16 +605,21 @@ pub async fn list_audit(
     Caller(caller): Caller,
     ApiQuery(q): ApiQuery<AuditParams>,
 ) -> Result<Json<Vec<AuditRecord>>, Problem> {
-    let auth = require_auth(&state)?;
+    // Demo mode with a database has an audit log but no auth.
+    let db = state.db().ok_or_else(|| {
+        Problem::unavailable(
+            "no_database",
+            "the audit log needs a database (--database-url); without one it goes to the process log",
+        )
+    })?;
     require_role(&state, &caller, Role::Admin, "audit.list", "").await?;
     Ok(Json(
-        auth.db
-            .list_audit(&AuditQuery {
-                limit: q.limit,
-                before: q.before,
-                action: q.action,
-                actor: q.actor,
-            })
-            .await?,
+        db.list_audit(&AuditQuery {
+            limit: q.limit,
+            before: q.before,
+            action: q.action,
+            actor: q.actor,
+        })
+        .await?,
     ))
 }

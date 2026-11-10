@@ -117,7 +117,7 @@ pub(crate) async fn insert<'e>(
 
 /// Postgres `jsonb` rejects `\u0000`; replace it so attacker-chosen strings
 /// can't make an audit write fail.
-fn strip_nul(v: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn strip_nul(v: &serde_json::Value) -> serde_json::Value {
     use serde_json::Value;
     match v {
         Value::String(s) => Value::String(s.replace('\0', "\u{FFFD}")),

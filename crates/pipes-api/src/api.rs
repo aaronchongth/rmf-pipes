@@ -35,8 +35,10 @@ const DEFAULT_WAIT_MS: u64 = 2000;
     info(
         title = "rmf-pipes",
         description = "The data layer of an Open-RMF system: a live view of its ROS 2 graph over \
-                       zenoh. Message payloads follow the JSON mapping in docs/json-mapping.md \
-                       (64-bit integers are strings, byte arrays are base64). With a database \
+                       zenoh, and a recorder of chosen topics, service requests and action goals, \
+                       feedback, statuses and results. Message payloads follow the JSON mapping in \
+                       docs/json-mapping.md (64-bit integers are strings, byte arrays are base64). \
+                       In demo mode (`--demo`) there is no authentication. Otherwise, with a database \
                        configured, everything except /healthz, POST /api/v1/auth/login, /login, \
                        /openapi.json, /docs and /ui/assets needs a session cookie or \
                        `Authorization: Bearer <API token>`."
@@ -48,6 +50,7 @@ const DEFAULT_WAIT_MS: u64 = 2000;
         (name = "auth", description = "Login, the current user and API tokens"),
         (name = "users", description = "User management and the audit log (admin)"),
         (name = "writes", description = "Publishing to topics and calling services (allowlisted, audited)"),
+        (name = "recording", description = "Recording rules, their streams, and recorded topic messages, service requests and action goals, feedback, statuses and results"),
     ),
     components(schemas(Lagged, TopicStatus)),
     modifiers(&Security),
@@ -116,6 +119,10 @@ pub fn router() -> (axum::Router<AppState>, utoipa::openapi::OpenApi) {
         .routes(routes!(crate::writes::policy))
         .routes(routes!(crate::writes::publish))
         .routes(routes!(crate::writes::call))
+        .routes(routes!(crate::recording::view))
+        .routes(routes!(crate::recording::set_rules))
+        .routes(routes!(crate::recording::recent))
+        .routes(routes!(crate::recording::records))
         .split_for_parts()
 }
 

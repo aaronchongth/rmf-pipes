@@ -13,6 +13,7 @@ time.workspace = true
 askama.workspace = true
 axum.workspace = true
 futures.workspace = true
+metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

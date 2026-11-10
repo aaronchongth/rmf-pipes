@@ -689,3 +689,229 @@ async fn ambiguous_writes_are_refused() {
         "{err:?}"
     );
 }
+
+/// A tap sees every request a client sends, decoded with the service's request
+/// type, while the real server still answers it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn taps_observe_requests_without_disturbing_the_server() {
+    use hiroz_msgs::example_interfaces::{AddTwoIntsRequest, AddTwoIntsResponse, srv::AddTwoInts};
+    init_logging();
+    let router = TestRouter::start();
+    let (_ctx, node) = fixture_node(&router.endpoint(), "adder");
+    let mut server = node
+        .create_service::<AddTwoInts>("/add_two_ints")
+        .build()
+        .unwrap();
+    let _serve = tokio::spawn(async move {
+        while let Ok(req) = server.async_take_request().await {
+            let (msg, reply) = req.into_parts();
+            let _ = reply
+                .reply(&AddTwoIntsResponse { sum: msg.a + msg.b })
+                .await;
+        }
+    });
+    let (_cctx, caller) = fixture_node(&router.endpoint(), "caller");
+    let client = caller
+        .create_client::<AddTwoInts>("/add_two_ints")
+        .build()
+        .unwrap();
+    let bus = connect(&router);
+    let err = bus.tap("/nobody_serves_this").await.unwrap_err();
+    assert!(matches!(err, BusError::NoServer(_)), "{err:?}");
+    wait_until(T, "the /add_two_ints server", || {
+        let n = bus
+            .graph()
+            .services()
+            .iter()
+            .filter(|s| s.name == "/add_two_ints" && s.servers > 0)
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let mut tap = bus.tap("/add_two_ints").await.unwrap();
+    assert_eq!(tap.type_name, "example_interfaces/srv/AddTwoInts");
+    assert_eq!(
+        tap.schema
+            .fields
+            .iter()
+            .map(|f| f.name.as_str())
+            .collect::<Vec<_>>(),
+        ["a", "b"]
+    );
+    // The tap's queryable reaches the router asynchronously, so the first
+    // calls may not be routed to it yet; every call must still be answered.
+    let mut seen = None;
+    for i in 0..50 {
+        let started = std::time::Instant::now();
+        let res = tokio::time::timeout(T, client.call(&AddTwoIntsRequest { a: 40, b: i }))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(res.sum, 40 + i, "the real server still answers");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the tap must not hold the call open: {:?}",
+            started.elapsed()
+        );
+        if let Ok(Some(s)) =
+            tokio::time::timeout(Duration::from_millis(200), tap.samples.next()).await
+        {
+            seen = Some((i, s));
+            break;
+        }
+    }
+    let (i, seen) = seen.expect("the tap saw no request");
+    assert!(seen.sequence.is_some(), "the rmw_zenoh attachment is read");
+    assert_eq!(
+        seen.decode().unwrap(),
+        json!({"a": "40", "b": i.to_string()})
+    );
+    drop(tap);
+    let res = tokio::time::timeout(T, client.call(&AddTwoIntsRequest { a: 1, b: 2 }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(res.sum, 3, "calls work after the tap is gone");
+}
+
+/// Type descriptions are per type, so a publisher that can't describe its own
+/// type (rclrs, `ros2 topic pub --once`) is decoded with a description from
+/// any other node using the same type and hash.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn schema_discovery_falls_back_to_other_nodes_using_the_type() {
+    init_logging();
+    let router = TestRouter::start();
+    let ctx = pipes_testkit::fixture_context(&router.endpoint());
+    let mute = ctx
+        .create_node("mute")
+        .without_parameters()
+        .build()
+        .unwrap();
+    let _mute_pub = keep_publishing(
+        mute.create_pub::<RosString>("/mute").build().unwrap(),
+        RosString {
+            data: "quiet".into(),
+        },
+    );
+    let bus = connect(&router);
+    wait_until(T, "the /mute publisher", || {
+        let g = bus.graph();
+        async move {
+            g.publishers_of("/mute")
+                .next()
+                .map(|_| ())
+                .ok_or("none".to_owned())
+        }
+    })
+    .await;
+    let err = bus.subscribe("/mute").await.unwrap_err();
+    assert!(
+        matches!(err, BusError::Schema { .. }),
+        "nobody can describe the type yet: {err:?}"
+    );
+    // Another node uses std_msgs/String (on another topic) and can describe it.
+    let (_ctx2, talker) = fixture_node(&router.endpoint(), "talker");
+    let _other = talker
+        .create_sub::<RosString>("/elsewhere")
+        .build()
+        .unwrap();
+    wait_until(T, "the /elsewhere subscription", || {
+        let g = bus.graph();
+        let n = g
+            .endpoints
+            .iter()
+            .filter(|e| e.name == "/elsewhere")
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let mut sub = bus.subscribe("/mute").await.unwrap();
+    let raw = tokio::time::timeout(T, sub.samples.next())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(raw.decode().unwrap(), json!({"data": "quiet"}));
+}
+
+/// The same fallback for services: a server that can't describe its type is
+/// tapped with the description from another node serving the same type.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn service_schemas_fall_back_to_other_nodes_using_the_type() {
+    use hiroz_msgs::example_interfaces::{AddTwoIntsRequest, AddTwoIntsResponse, srv::AddTwoInts};
+    init_logging();
+    let router = TestRouter::start();
+    let ctx = pipes_testkit::fixture_context(&router.endpoint());
+    let mute = ctx
+        .create_node("mute")
+        .without_parameters()
+        .build()
+        .unwrap();
+    let mut server = mute
+        .create_service::<AddTwoInts>("/mute_add")
+        .build()
+        .unwrap();
+    let _serve = tokio::spawn(async move {
+        while let Ok(req) = server.async_take_request().await {
+            let (msg, reply) = req.into_parts();
+            let _ = reply
+                .reply(&AddTwoIntsResponse { sum: msg.a + msg.b })
+                .await;
+        }
+    });
+    let bus = connect(&router);
+    wait_until(T, "the /mute_add server", || {
+        let n = bus
+            .graph()
+            .services()
+            .iter()
+            .filter(|s| s.name == "/mute_add")
+            .count();
+        async move { (n > 0).then_some(()).ok_or(format!("{n}")) }
+    })
+    .await;
+    let err = bus.tap("/mute_add").await.unwrap_err();
+    assert!(matches!(err, BusError::Schema { .. }), "{err:?}");
+    let (_ctx2, other) = fixture_node(&router.endpoint(), "describer");
+    let _other = other
+        .create_service::<AddTwoInts>("/other_add")
+        .build()
+        .unwrap();
+    let (_ctx3, caller) = fixture_node(&router.endpoint(), "caller");
+    let client = caller
+        .create_client::<AddTwoInts>("/mute_add")
+        .build()
+        .unwrap();
+    // Failed discoveries are cached briefly; wait out the cache.
+    let mut tap = wait_until(
+        Duration::from_secs(30),
+        "a tap described by the other node",
+        || {
+            let bus = bus.clone();
+            async move { bus.tap("/mute_add").await.map_err(|e| e.to_string()) }
+        },
+    )
+    .await;
+    // As in `taps_observe_…`: retry until the queryable has propagated.
+    let mut seen = None;
+    for _ in 0..50 {
+        let _ = tokio::time::timeout(T, client.call(&AddTwoIntsRequest { a: 2, b: 3 }))
+            .await
+            .unwrap()
+            .unwrap();
+        if let Ok(Some(s)) =
+            tokio::time::timeout(Duration::from_millis(200), tap.samples.next()).await
+        {
+            seen = Some(s);
+            break;
+        }
+    }
+    assert_eq!(
+        seen.expect("the tap saw no request").decode().unwrap(),
+        json!({"a": "2", "b": "3"})
+    );
+    let err = bus.tap("/bad*name").await.unwrap_err();
+    assert!(
+        matches!(err, BusError::Subscribe { .. }),
+        "names with key syntax are refused: {err:?}"
+    );
+}

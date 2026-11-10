@@ -257,6 +257,10 @@ struct Entry {
     task: Option<AbortHandle>,
     standing: bool,
     watchers: usize,
+    /// Watches by the recorder ([`Hub::watch_pinned`]), included in
+    /// `watchers`; a pinned entry doesn't count toward
+    /// `max_on_demand_topics`.
+    pinned: usize,
     /// Set when the entry stops being wanted (no watchers, not standing).
     idle_since: Option<Instant>,
 }
@@ -425,12 +429,13 @@ impl Watch {
 struct WatchGuard {
     inner: Weak<Inner>,
     topic: String,
+    pinned: bool,
 }
 
 impl Drop for WatchGuard {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.release(&self.topic);
+            inner.release(&self.topic, self.pinned);
         }
     }
 }
@@ -504,6 +509,17 @@ impl Hub {
 
     /// Register interest in `topic`, subscribing if needed.
     pub fn watch(&self, topic: &str) -> Result<Watch, HubError> {
+        self.watch_inner(topic, false)
+    }
+
+    /// [`Hub::watch`] for the recorder: the entry doesn't count toward
+    /// `max_on_demand_topics` (the recorder has its own stream cap), so
+    /// recording rules can't use up the slots API clients need.
+    pub fn watch_pinned(&self, topic: &str) -> Result<Watch, HubError> {
+        self.watch_inner(topic, true)
+    }
+
+    fn watch_inner(&self, topic: &str, pinned: bool) -> Result<Watch, HubError> {
         validate_topic(topic)?;
         let mut topics = self.inner.lock();
         // Checked under the lock: `close_all` cancels before it drains, so a
@@ -511,9 +527,14 @@ impl Hub {
         if self.inner.shutdown.is_cancelled() {
             return Err(HubError::ShuttingDown);
         }
-        if !topics.contains_key(topic) {
+        if !topics.contains_key(topic) && !pinned {
             let cap = self.inner.cfg.max_on_demand_topics;
-            if topics.values().filter(|e| !e.standing).count() >= cap {
+            if topics
+                .values()
+                .filter(|e| !e.standing && e.pinned == 0)
+                .count()
+                >= cap
+            {
                 return Err(HubError::TooManyTopics(cap));
             }
         }
@@ -521,6 +542,9 @@ impl Hub {
             .entry(topic.to_owned())
             .or_insert_with(|| self.inner.new_entry(topic, false));
         entry.watchers += 1;
+        if pinned {
+            entry.pinned += 1;
+        }
         entry.idle_since = None;
         let shared = entry.shared.clone();
         let (events, initial_status, initial_latest) =
@@ -533,6 +557,7 @@ impl Hub {
             _guard: WatchGuard {
                 inner: Arc::downgrade(&self.inner),
                 topic: topic.to_owned(),
+                pinned,
             },
         })
     }
@@ -593,6 +618,7 @@ impl Inner {
             task: Some(task),
             standing,
             watchers: 0,
+            pinned: 0,
             idle_since: None,
         }
     }
@@ -658,10 +684,13 @@ impl Inner {
         metrics::gauge!("rmf_pipes_watchers").set(watchers);
     }
 
-    fn release(&self, topic: &str) {
+    fn release(&self, topic: &str, pinned: bool) {
         let mut topics = self.lock();
         if let Some(e) = topics.get_mut(topic) {
             e.watchers = e.watchers.saturating_sub(1);
+            if pinned {
+                e.pinned = e.pinned.saturating_sub(1);
+            }
             if e.watchers == 0 && !e.standing {
                 e.idle_since = Some(Instant::now());
             }

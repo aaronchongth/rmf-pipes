@@ -174,7 +174,51 @@ impl HirozBus {
             .collect()
     }
 
-    /// The schema of `type_info`, from the cache or any of `nodes`.
+    /// Nodes to ask for the description of `type_info`: `preferred` (the
+    /// endpoints being bound to) first, then up to [`MAX_EXTRA_DESCRIBERS`]
+    /// other nodes with any endpoint of the same type and hash. Type
+    /// descriptions are per type, not per topic, and some client libraries
+    /// (rclrs, `ros2 topic pub --once`) never answer the query.
+    fn describers(&self, type_info: &TypeInfo, preferred: &[NodeEntity]) -> Vec<NodeEntity> {
+        let mut nodes = preferred.to_vec();
+        let known = |nodes: &[NodeEntity], n: &NodeEntity| {
+            nodes
+                .iter()
+                .any(|x| x.name == n.name && x.namespace == n.namespace)
+        };
+        let graph = self.graph_handle();
+        let topics = graph
+            .get_topic_names_and_types()
+            .into_iter()
+            .flat_map(|(t, _)| {
+                [EndpointKind::Publisher, EndpointKind::Subscription].map(|k| (k, t.clone(), false))
+            });
+        let services = graph
+            .get_service_names_and_types()
+            .into_iter()
+            .flat_map(|(t, _)| {
+                [EndpointKind::Service, EndpointKind::Client].map(|k| (k, t.clone(), true))
+            });
+        let mut extra = 0;
+        for (kind, name, service) in topics.chain(services) {
+            for ep in self.remote_endpoints(kind, &name, service) {
+                if ep.type_info.as_ref() == Some(type_info)
+                    && let Some(n) = &ep.node
+                    && !known(&nodes, n)
+                {
+                    nodes.push(n.clone());
+                    extra += 1;
+                    if extra >= MAX_EXTRA_DESCRIBERS {
+                        return nodes;
+                    }
+                }
+            }
+        }
+        nodes
+    }
+
+    /// The schema of `type_info`, from the cache or any of `nodes` (see
+    /// [`HirozBus::describers`]).
     async fn message_schema(
         &self,
         target: &str,
@@ -188,7 +232,7 @@ impl HirozBus {
             return Ok(s.clone());
         }
         let mut errors = Vec::new();
-        for node in nodes {
+        for node in &self.describers(type_info, nodes) {
             match type_desc::fetch(
                 &self.node,
                 &node.namespace,
@@ -230,7 +274,7 @@ impl HirozBus {
         }
         let t = self.cfg.discovery_timeout;
         let mut errors = Vec::new();
-        for node in nodes {
+        for node in &self.describers(type_info, nodes) {
             let (ns, name) = (&node.namespace, &node.name);
             match type_desc::fetch(&self.node, ns, name, &srv, &hash, t).await {
                 Ok(composite) => match (
@@ -331,35 +375,15 @@ impl Bus for HirozBus {
         let type_name = ros_type_name_from_dds(&chosen.type_info.name);
         let type_hash = chosen.type_info.hash.to_rihs_string();
 
-        // Any publisher of the chosen type can describe it; try each in turn.
-        let mut errors = Vec::new();
-        let mut schema = None;
-        for node in &chosen.nodes {
-            match type_desc::fetch(
-                &self.node,
-                &node.namespace,
-                &node.name,
-                &type_name,
-                &type_hash,
-                self.cfg.discovery_timeout,
-            )
+        // Any publisher of the chosen type can describe it, else any other
+        // node using the type.
+        let schema: Arc<MessageSchema> = self
+            .message_schema(topic, &chosen.type_info, &chosen.nodes)
             .await
-            {
-                Ok(s) => {
-                    schema = Some(s);
-                    break;
-                }
-                Err(e) => errors.push(e),
-            }
-        }
-        let schema: Arc<MessageSchema> = schema.ok_or_else(|| BusError::Schema {
-            topic: topic.to_owned(),
-            reason: if errors.is_empty() {
-                "no publisher advertises a node to ask for the type description".to_owned()
-            } else {
-                errors.join("; ")
-            },
-        })?;
+            .map_err(|reason| BusError::Schema {
+                topic: topic.to_owned(),
+                reason,
+            })?;
 
         // `create_sub_impl` is hiroz's (doc-hidden) builder that takes an
         // explicit TypeInfo: the public `create_dyn_sub` recomputes the hash
@@ -546,7 +570,91 @@ impl Bus for HirozBus {
             response: message_to_json(&decoded),
         })
     }
+
+    async fn tap(&self, service: &str) -> Result<Subscription, BusError> {
+        // The name becomes part of a key expression: never let a wildcard or
+        // other key-expression syntax in.
+        if service.is_empty()
+            || !service
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '~')
+        {
+            return Err(BusError::Subscribe {
+                topic: service.to_owned(),
+                reason: "not a valid ROS service name".into(),
+            });
+        }
+        let servers = self.remote_endpoints(EndpointKind::Service, service, true);
+        let chosen =
+            choose_publishers(&servers).ok_or_else(|| BusError::NoServer(service.to_owned()))?;
+        let server = servers
+            .iter()
+            .find(|e| e.type_info.as_ref() == Some(&chosen.type_info))
+            .ok_or_else(|| BusError::NoServer(service.to_owned()))?;
+        let (req_schema, _) = self
+            .bounded_discovery(
+                service,
+                &chosen.type_info,
+                self.service_schema(service, &chosen.type_info, &chosen.nodes),
+            )
+            .await
+            .map_err(|e| BusError::Schema {
+                topic: service.to_owned(),
+                reason: match e {
+                    WriteError::Schema { reason, .. } => reason,
+                    other => other.to_string(),
+                },
+            })?;
+        // The exact key the server's queryable uses, so the tap sees only this
+        // service. rmw_zenoh clients query `AllComplete`, so the tap must be
+        // complete to receive anything; it never replies, and dropping each
+        // query at once finalizes it without delaying the client.
+        let subscribe_err = |reason: String| BusError::Subscribe {
+            topic: service.to_owned(),
+            reason,
+        };
+        let key = hiroz_protocol::KeyExprFormat::default()
+            .topic_key_expr(server)
+            .map_err(|e| subscribe_err(e.to_string()))?;
+        let queryable = self
+            .node
+            .session()
+            .declare_queryable((*key).clone())
+            .complete(true)
+            .with(zenoh::handlers::RingChannel::new(TAP_DEPTH))
+            .await
+            .map_err(|e| subscribe_err(e.to_string()))?;
+        let schema = req_schema.clone();
+        let samples = futures::stream::unfold(queryable, move |queryable| {
+            let schema = schema.clone();
+            async move {
+                let query = queryable.recv_async().await.ok()?;
+                let payload = query
+                    .payload()
+                    .map(|p| p.to_bytes().into_owned())
+                    .unwrap_or_default();
+                let attachment = query
+                    .attachment()
+                    .and_then(|a| Attachment::try_from(a).ok());
+                drop(query);
+                Some((raw_request(payload, attachment, schema), queryable))
+            }
+        });
+        Ok(Subscription {
+            type_name: ros_type_name_from_dds(&chosen.type_info.name),
+            type_hash: chosen.type_info.hash.to_rihs_string(),
+            schema: convert::schema(&req_schema),
+            samples: Box::pin(samples),
+        })
+    }
 }
+
+/// Nodes beyond a target's own endpoints that may be asked for a type
+/// description (each failed ask can cost a discovery timeout).
+const MAX_EXTRA_DESCRIBERS: usize = 3;
+/// Requests buffered per tap; the oldest are dropped when the consumer falls
+/// behind.
+const TAP_DEPTH: usize = 64;
 
 /// An unused write publisher is undeclared after this long.
 const PUBLISHER_IDLE: Duration = Duration::from_secs(60);
@@ -703,18 +811,38 @@ fn subscription_qos(publishers: &[hiroz_protocol::qos::QosProfile], depth: usize
     }
 }
 
-fn raw_sample(sample: zenoh::sample::Sample, schema: Arc<MessageSchema>) -> RawSample {
-    let size = sample.payload().len();
-    let attachment = sample
-        .attachment()
-        .and_then(|a| Attachment::try_from(a).ok());
-    let source_timestamp = attachment.as_ref().and_then(|a| {
+/// The sender's timestamp and sequence number from an rmw_zenoh attachment.
+fn attachment_fields(attachment: Option<&Attachment>) -> (Option<SystemTime>, Option<i64>) {
+    let source_timestamp = attachment.and_then(|a| {
         u64::try_from(a.source_timestamp)
             .ok()
             .filter(|ns| *ns > 0)
             .map(|ns| UNIX_EPOCH + Duration::from_nanos(ns))
     });
-    let sequence = attachment.map(|a| a.sequence_number);
+    (source_timestamp, attachment.map(|a| a.sequence_number))
+}
+
+/// A tapped service request (CDR `payload`), decoded on demand.
+fn raw_request(
+    payload: Vec<u8>,
+    attachment: Option<Attachment>,
+    schema: Arc<MessageSchema>,
+) -> RawSample {
+    let (source_timestamp, sequence) = attachment_fields(attachment.as_ref());
+    RawSample::new(SystemTime::now(), payload.len(), move || {
+        DynamicMessage::from_cdr(&payload, &schema)
+            .map(|m| message_to_json(&m))
+            .map_err(|e| DecodeError(e.to_string()))
+    })
+    .with_attachment(source_timestamp, sequence)
+}
+
+fn raw_sample(sample: zenoh::sample::Sample, schema: Arc<MessageSchema>) -> RawSample {
+    let size = sample.payload().len();
+    let attachment = sample
+        .attachment()
+        .and_then(|a| Attachment::try_from(a).ok());
+    let (source_timestamp, sequence) = attachment_fields(attachment.as_ref());
     RawSample::new(SystemTime::now(), size, move || {
         let bytes = sample.payload().to_bytes();
         DynamicMessage::from_cdr(&bytes, &schema)

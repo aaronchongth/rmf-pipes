@@ -647,6 +647,34 @@ async fn on_demand_topics_are_capped_but_existing_and_standing_ones_are_not() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn pinned_watches_neither_count_toward_nor_are_refused_by_the_cap() {
+    let bus = FakeBus::new();
+    for t in ["/a", "/b", "/c", "/d", "/r1", "/r2"] {
+        bus.add_publisher(t, TY, H1);
+    }
+    let hub = hub(&bus, cfg()); // max_on_demand_topics: 3
+    let pinned: Vec<Watch> = ["/r1", "/r2"]
+        .iter()
+        .map(|t| hub.watch_pinned(t).unwrap())
+        .collect();
+    let _w: Vec<Watch> = ["/a", "/b", "/c"]
+        .iter()
+        .map(|t| hub.watch(t).unwrap())
+        .collect();
+    assert_eq!(hub.watch("/d").unwrap_err(), HubError::TooManyTopics(3));
+    assert!(
+        hub.watch_pinned("/d").is_ok(),
+        "the recorder has its own cap"
+    );
+    // An entry that was pinned and is now only watched counts again.
+    let plain = hub.watch("/r1").unwrap();
+    drop(pinned);
+    let _keep = plain;
+    bus.add_publisher("/e", TY, H1);
+    assert_eq!(hub.watch("/e").unwrap_err(), HubError::TooManyTopics(3));
+}
+
+#[tokio::test(start_paused = true)]
 async fn watch_snapshot_and_events_do_not_overlap() {
     let bus = FakeBus::new();
     bus.add_publisher("/chatter", TY, H1);

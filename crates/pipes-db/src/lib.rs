@@ -1,5 +1,5 @@
-//! Persistence for rmf-pipes: users, browser sessions, API tokens and the
-//! audit log, in the `pipes` schema of a Postgres database.
+//! Persistence for rmf-pipes: users, browser sessions, API tokens, the audit
+//! log and recordings, in the `pipes` schema of a Postgres database.
 //!
 //! - Queries are runtime-checked (`sqlx::query`), and every query is exercised
 //!   by a `#[sqlx::test]` against a fresh database. Run them with
@@ -11,6 +11,7 @@
 
 pub mod audit;
 pub mod credentials;
+pub mod records;
 pub mod users;
 
 use std::{fmt, str::FromStr};
@@ -20,6 +21,7 @@ use sqlx::postgres::{PgConnectOptions, PgPool, PgPoolOptions};
 
 pub use audit::{AuditEntry, AuditQuery, AuditRecord, Outcome};
 pub use credentials::{ApiToken, Credential};
+pub use records::{NewRecord, RecordQuery, StoredRecord};
 pub use users::{LoginOutcome, MIN_PASSWORD_LEN, User, UserChanges, validate_username};
 
 /// The embedded migrations (`crates/pipes-db/migrations`).

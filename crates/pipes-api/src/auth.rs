@@ -4,6 +4,16 @@
 //!   viewer role. The API is read-only; writes and account endpoints answer
 //!   `503 auth_disabled`. The binary only allows this on a loopback address
 //!   unless told otherwise.
+//! - **Demo mode** (`--demo`, loopback only, with or without a database):
+//!   authentication is off and every caller is [`Principal::Demo`], with the
+//!   admin role, so the allowlisted write path and recording rules work
+//!   without logging in. Account endpoints answer `503 auth_disabled`. The
+//!   CSRF rule below applies to every non-GET request, since any web page the
+//!   browser visits could otherwise post to a localhost port. Against DNS
+//!   rebinding (a page whose own domain is re-pointed at 127.0.0.1, making
+//!   its requests same-origin), every request must also be addressed to
+//!   `localhost` or a loopback IP (`Host`), and a browser `Origin`, if sent,
+//!   must be that same host.
 //! - **Auth enabled**: every route except [`is_public`] ones needs a session
 //!   cookie (browser) or `Authorization: Bearer rp_…` (scripts). Missing or
 //!   invalid credentials get `401` (API) or a redirect to `/login` (pages).
@@ -113,6 +123,9 @@ impl AuthService {
 pub enum Principal {
     /// Auth is disabled; the caller may read.
     Anonymous,
+    /// Demo mode: auth is disabled and every caller may do anything an admin
+    /// can, except manage accounts.
+    Demo,
     /// An authenticated user.
     User {
         /// The user.
@@ -127,6 +140,7 @@ impl Principal {
     pub fn role(&self) -> Role {
         match self {
             Self::Anonymous => Role::Viewer,
+            Self::Demo => Role::Admin,
             Self::User { user, .. } => user.role,
         }
     }
@@ -134,7 +148,7 @@ impl Principal {
     /// The user, if authenticated.
     pub fn user(&self) -> Option<&User> {
         match self {
-            Self::Anonymous => None,
+            Self::Anonymous | Self::Demo => None,
             Self::User { user, .. } => Some(user),
         }
     }
@@ -148,6 +162,7 @@ impl Principal {
     pub fn method(&self) -> String {
         match self {
             Self::Anonymous => "none".into(),
+            Self::Demo => "demo".into(),
             Self::User {
                 credential: Credential::Session,
                 ..
@@ -227,7 +242,17 @@ fn is_page(path: &str) -> bool {
 /// Middleware: resolve the caller, enforce authentication and the CSRF rule.
 pub async fn authenticate(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     let Some(auth) = state.auth() else {
-        req.extensions_mut().insert(Principal::Anonymous);
+        let principal = if state.demo() {
+            if let Err(p) = demo_origin_check(req.headers())
+                .and_then(|()| csrf_check(req.method(), req.headers(), &Principal::Demo))
+            {
+                return p.into_response();
+            }
+            Principal::Demo
+        } else {
+            Principal::Anonymous
+        };
+        req.extensions_mut().insert(principal);
         return next.run(req).await;
     };
     let path = req.uri().path().to_owned();
@@ -285,14 +310,17 @@ async fn resolve(
 }
 
 fn csrf_check(method: &Method, headers: &HeaderMap, p: &Principal) -> Result<(), Problem> {
-    let cookie_auth = matches!(
+    // Requests a cross-site page can trigger: cookie-authenticated ones, and
+    // in demo mode all of them.
+    let ambient = matches!(
         p,
-        Principal::User {
-            credential: Credential::Session,
-            ..
-        }
+        Principal::Demo
+            | Principal::User {
+                credential: Credential::Session,
+                ..
+            }
     );
-    if !cookie_auth || matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+    if !ambient || matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
         return Ok(());
     }
     let json = headers
@@ -308,9 +336,66 @@ fn csrf_check(method: &Method, headers: &HeaderMap, p: &Principal) -> Result<(),
     } else {
         Err(Problem::forbidden(
             "csrf",
-            "requests authenticated by session cookie must send Content-Type: application/json",
+            "requests authenticated by session cookie (or any request in demo mode) must send Content-Type: application/json",
         ))
     }
+}
+
+/// Demo mode: refuse requests addressed to anything but a loopback name, and
+/// browser requests from any other origin (DNS rebinding).
+fn demo_origin_check(headers: &HeaderMap) -> Result<(), Problem> {
+    let refuse = |what: &'static str| {
+        Err(Problem::forbidden(
+            what,
+            "demo mode only answers requests to localhost or a loopback address, from no page or a page served by rmf-pipes itself",
+        ))
+    };
+    let Some(host) = headers.get(header::HOST) else {
+        // Not a browser (they always send Host); nothing to rebind.
+        return Ok(());
+    };
+    let Ok(host) = host.to_str() else {
+        return refuse("host");
+    };
+    if !is_loopback_host(host) {
+        return refuse("host");
+    }
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        let same = origin.to_str().is_ok_and(|o| {
+            o.strip_prefix("http://")
+                .or_else(|| o.strip_prefix("https://"))
+                .is_some_and(|rest| rest.eq_ignore_ascii_case(host))
+        });
+        if !same {
+            return refuse("origin");
+        }
+    }
+    Ok(())
+}
+
+/// `localhost`, `127.x.y.z` or `[::1]`, with an optional port.
+fn is_loopback_host(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((ip, port)) if port.is_empty() || port.strip_prefix(':').is_some_and(is_port) => {
+                ip
+            }
+            _ => return false,
+        },
+        None => match host.rsplit_once(':') {
+            Some((name, port)) if is_port(port) => name,
+            Some(_) => return false,
+            None => host,
+        },
+    };
+    name.eq_ignore_ascii_case("localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn is_port(p: &str) -> bool {
+    !p.is_empty() && p.len() <= 5 && p.bytes().all(|b| b.is_ascii_digit())
 }
 
 fn login_redirect(headers: &HeaderMap, uri: &axum::http::Uri) -> Response {
@@ -526,11 +611,38 @@ pub fn login_keys(username: &str, addr: Option<SocketAddr>) -> Vec<LimitKey> {
 /// Record an audit entry; failures are logged, not returned (the action the
 /// entry describes has already been decided).
 pub async fn audit(state: &AppState, entry: AuditEntry) {
-    if let Some(auth) = state.auth()
-        && let Err(err) = auth.db.record_audit(&entry).await
-    {
+    let _ = record_audit(state, &entry).await;
+}
+
+/// Record `entry` in the database's audit log, or without a database (demo
+/// mode) in the process log under the `rmf_pipes::audit` target. Returns the
+/// entry's id (database ids, or a per-process counter).
+pub async fn record_audit(state: &AppState, entry: &AuditEntry) -> Result<i64, pipes_db::DbError> {
+    static NEXT_LOCAL_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(1);
+    let Some(db) = state.db() else {
+        let id = NEXT_LOCAL_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !state.demo() {
+            // Anonymous mode has no audit log; refusals are only worth a
+            // debug line (they'd otherwise let anyone flood the log).
+            tracing::debug!(action = %entry.action, outcome = ?entry.outcome, "not audited: no database");
+            return Ok(id);
+        }
+        tracing::info!(
+            target: "rmf_pipes::audit",
+            id,
+            actor = %entry.actor,
+            auth_method = %entry.auth_method,
+            action = %entry.action,
+            target_name = %entry.target,
+            outcome = ?entry.outcome,
+            detail = %entry.detail,
+            "audit"
+        );
+        return Ok(id);
+    };
+    db.record_audit(entry).await.inspect_err(|err| {
         tracing::error!(%err, action = %entry.action, "cannot write the audit log");
-    }
+    })
 }
 
 /// Require auth to be enabled (account and write endpoints).
@@ -548,6 +660,35 @@ mod tests {
     use axum::http::{HeaderMap, HeaderValue, Method, header};
 
     use super::*;
+
+    #[test]
+    fn loopback_hosts_are_recognized() {
+        for ok in [
+            "localhost",
+            "LOCALHOST:18080",
+            "127.0.0.1",
+            "127.0.0.1:18080",
+            "127.9.9.9:1",
+            "[::1]",
+            "[::1]:18080",
+        ] {
+            assert!(is_loopback_host(ok), "{ok}");
+        }
+        for bad in [
+            "evil.example",
+            "evil.example:18080",
+            "localhost.evil.example",
+            "10.0.0.1:18080",
+            "0.0.0.0:18080",
+            "[::1]x",
+            "[::2]:80",
+            "localhost:",
+            "localhost:abc",
+            "::1",
+        ] {
+            assert!(!is_loopback_host(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn public_routes_are_exactly_these() {

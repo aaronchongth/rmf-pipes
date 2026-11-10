@@ -39,6 +39,8 @@ struct State {
     call_timeouts: Vec<std::time::Duration>,
     subscribers: HashMap<String, Vec<mpsc::UnboundedSender<RawSample>>>,
     subscribe_calls: HashMap<String, usize>,
+    taps: HashMap<String, Vec<mpsc::UnboundedSender<RawSample>>>,
+    calls: Vec<(String, serde_json::Value)>,
 }
 
 impl FakeBus {
@@ -186,6 +188,64 @@ impl FakeBus {
         });
     }
 
+    /// Deliver a request that decodes to `data` to every live tap of
+    /// `service`, as if a client had called it. Returns how many taps saw it.
+    pub fn request(&self, service: &str, data: serde_json::Value) -> usize {
+        let mut st = self.lock();
+        let Some(senders) = st.taps.get_mut(service) else {
+            return 0;
+        };
+        senders.retain(|s| !s.is_closed());
+        let size = data.to_string().len();
+        senders
+            .iter()
+            .filter(|s| {
+                let d = data.clone();
+                s.send(RawSample::new(SystemTime::now(), size, move || Ok(d)))
+                    .is_ok()
+            })
+            .count()
+    }
+
+    /// Deliver a request with an explicit size and decoder to every live tap
+    /// of `service`.
+    pub fn request_raw(
+        &self,
+        service: &str,
+        size_bytes: usize,
+        decode: impl FnOnce() -> Result<serde_json::Value, DecodeError> + Send + Clone + 'static,
+    ) -> usize {
+        let mut st = self.lock();
+        let Some(senders) = st.taps.get_mut(service) else {
+            return 0;
+        };
+        senders.retain(|s| !s.is_closed());
+        senders
+            .iter()
+            .filter(|s| {
+                s.send(RawSample::new(
+                    SystemTime::now(),
+                    size_bytes,
+                    decode.clone(),
+                ))
+                .is_ok()
+            })
+            .count()
+    }
+
+    /// Taps of `service` whose consumer is still alive.
+    pub fn live_taps(&self, service: &str) -> usize {
+        self.lock()
+            .taps
+            .get(service)
+            .map_or(0, |v| v.iter().filter(|s| !s.is_closed()).count())
+    }
+
+    /// Every [`Bus::call`] made, with its request, in order.
+    pub fn calls(&self) -> Vec<(String, serde_json::Value)> {
+        self.lock().calls.clone()
+    }
+
     /// The timeout each [`Bus::call`] was given, in order.
     pub fn call_timeouts(&self) -> Vec<std::time::Duration> {
         self.lock().call_timeouts.clone()
@@ -288,6 +348,7 @@ impl Bus for FakeBus {
         let (type_name, f) = {
             let mut st = self.lock();
             st.call_timeouts.push(timeout);
+            st.calls.push((service.to_owned(), request.clone()));
             if let Some(e) = st.write_failures.get(service) {
                 return Err(e.clone());
             }
@@ -299,6 +360,32 @@ impl Bus for FakeBus {
         Ok(Called {
             type_name,
             response: f(request)?,
+        })
+    }
+
+    /// Taps need a server in the graph; [`FakeBus::fail_subscribe`] with the
+    /// service's name makes them fail. Requests come from [`FakeBus::request`].
+    async fn tap(&self, service: &str) -> Result<Subscription, BusError> {
+        let mut st = self.lock();
+        if let Some(err) = st.failures.get(service) {
+            return Err(err.clone());
+        }
+        let Some(server) = st
+            .graph
+            .endpoints
+            .iter()
+            .find(|e| e.kind == EndpointKind::ServiceServer && e.name == service)
+            .cloned()
+        else {
+            return Err(BusError::NoServer(service.to_owned()));
+        };
+        let (tx, rx) = mpsc::unbounded_channel();
+        st.taps.entry(service.to_owned()).or_default().push(tx);
+        Ok(Subscription {
+            schema: fake_schema(&format!("{}_Request", server.type_name)),
+            type_name: server.type_name,
+            type_hash: server.type_hash,
+            samples: Box::pin(UnboundedReceiverStream::new(rx)),
         })
     }
 }

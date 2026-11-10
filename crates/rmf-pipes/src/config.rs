@@ -24,9 +24,10 @@ pub struct Config {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// Postgres URL (`postgres://user:password@host:5432/db`). Enables
-    /// authentication: users, sessions, API tokens and the audit log. Without
-    /// it the API is anonymous and read-only.
+    /// Postgres URL (`postgres://user:password@host:5432/db`). Holds the
+    /// audit log and recordings, and enables authentication (users, sessions,
+    /// API tokens) unless `--demo`. Without it the API is anonymous and
+    /// read-only (or, with `--demo`, audits go to the log).
     #[arg(
         long,
         env = "RMF_PIPES_DATABASE_URL",
@@ -62,6 +63,12 @@ pub struct Config {
     /// over HTTPS (e.g. behind a TLS-terminating proxy).
     #[arg(long, env = "RMF_PIPES_COOKIE_SECURE", hide_env_values = true, action = ArgAction::SetTrue)]
     pub cookie_secure: bool,
+
+    /// Demo mode: no authentication, and every caller acts as an admin, so
+    /// allowlisted writes and recording-rule changes work without logging in.
+    /// Only allowed on a loopback `--listen` address.
+    #[arg(long, env = "RMF_PIPES_DEMO", hide_env_values = true, action = ArgAction::SetTrue)]
+    pub demo: bool,
 
     /// Allow serving without authentication on a non-loopback address.
     /// Anyone who can reach the port can then read everything.
@@ -171,7 +178,7 @@ pub struct Config {
     )]
     pub max_streams: usize,
 
-    /// Topics that may be published to via the API (needs a database),
+    /// Topics that may be published to via the API (needs auth or `--demo`),
     /// comma-separated `pattern` or `pattern=role` (role: operator, the
     /// default, or admin), e.g. `door_requests,fleet/*/estop=admin`.
     #[arg(
@@ -195,6 +202,22 @@ pub struct Config {
     /// disables the limit.
     #[arg(long, env = "RMF_PIPES_WRITE_INTERVAL", hide_env_values = true, value_parser = humantime::parse_duration, default_value = "200ms")]
     pub write_interval: Duration,
+
+    /// Recording rules to start with: a TOML file of `[[rules]]` tables (see
+    /// docs/recording.md). Rules can be replaced at runtime through the API;
+    /// the file is not rewritten.
+    #[arg(long, env = "RMF_PIPES_RECORD_CONFIG", hide_env_values = true)]
+    pub record_config: Option<PathBuf>,
+
+    /// Delete stored records older than this (checked hourly); `0s` keeps
+    /// them forever.
+    #[arg(long, env = "RMF_PIPES_RECORD_RETENTION", hide_env_values = true, value_parser = humantime::parse_duration, default_value = "7d")]
+    pub record_retention: Duration,
+
+    /// Most recording streams at once; further matches are skipped (and
+    /// reported).
+    #[arg(long, env = "RMF_PIPES_MAX_RECORD_STREAMS", hide_env_values = true, value_parser = clap::value_parser!(u32).range(1..=10_000), default_value_t = 256)]
+    pub max_record_streams: u32,
 
     /// How long to wait for a publisher's type description when subscribing.
     #[arg(long, env = "RMF_PIPES_DISCOVERY_TIMEOUT", hide_env_values = true, value_parser = humantime::parse_duration, default_value = "5s")]
@@ -358,6 +381,34 @@ impl Config {
         }
     }
 
+    /// The initial recording rules: from `--record-config`, or none. Not yet
+    /// validated against the sinks (the recorder does that).
+    pub fn record_rules(&self) -> Result<Vec<pipes_core::record::RecordRule>, String> {
+        /// `--record-config` file layout.
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RulesFile {
+            #[serde(default)]
+            rules: Vec<pipes_core::record::RecordRule>,
+        }
+        let Some(path) = &self.record_config else {
+            return Ok(Vec::new());
+        };
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("--record-config {}: {e}", path.display()))?;
+        toml::from_str::<RulesFile>(&text)
+            .map(|f| f.rules)
+            .map_err(|e| format!("--record-config {}: {e}", path.display()))
+    }
+
+    /// Recorder settings.
+    pub fn recorder(&self) -> pipes_core::recorder::RecorderConfig {
+        pipes_core::recorder::RecorderConfig {
+            max_streams: self.max_record_streams as usize,
+            ..pipes_core::recorder::RecorderConfig::default()
+        }
+    }
+
     /// Hub settings.
     pub fn hub(&self) -> pipes_core::hub::HubConfig {
         pipes_core::hub::HubConfig {
@@ -467,6 +518,48 @@ mod tests {
                 .unwrap_err()
                 .contains("--allow-call `door-requests`")
         );
+    }
+
+    #[test]
+    fn record_config_files_are_parsed_and_errors_name_the_file() {
+        let dir = std::env::temp_dir().join(format!("rmf-pipes-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = dir.join("good.toml");
+        std::fs::write(
+            &good,
+            r#"
+[[rules]]
+name = "nav"
+match = "/*/navigate_to_pose"
+kind = "action"
+parts = ["goal", "result"]
+sinks = ["console"]
+"#,
+        )
+        .unwrap();
+        let cfg = Config::try_parse_from(["rmf-pipes", "--record-config", good.to_str().unwrap()])
+            .unwrap();
+        let rules = cfg.record_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].pattern.matches("/robot0/navigate_to_pose"));
+        let bad = dir.join("bad.toml");
+        std::fs::write(
+            &bad,
+            "[[rules]]
+name = \"x\"
+match = \"a\"
+kind = \"topic\"
+sink = \"console\"
+",
+        )
+        .unwrap();
+        let cfg = Config::try_parse_from(["rmf-pipes", "--record-config", bad.to_str().unwrap()])
+            .unwrap();
+        let err = cfg.record_rules().unwrap_err();
+        assert!(err.contains("bad.toml") && err.contains("sink"), "{err}");
+        let cfg = Config::try_parse_from(["rmf-pipes"]).unwrap();
+        assert!(cfg.record_rules().unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

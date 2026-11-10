@@ -31,6 +31,7 @@
   dt { color: var(--muted); }
   dd { margin: 0; word-break: break-all; }
   input { font: inherit; padding: 6px 8px; width: 100%; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+  textarea { font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; width: 100%; min-height: 16em; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); }
   button { font: inherit; padding: 6px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
 </style>
 <script src="/ui/assets/htmx-2.0.11.min.js"></script>
@@ -39,7 +40,8 @@
 <header>
   <h1><a href="/">rmf-pipes</a></h1>
   <span class="meta">v{{ version }} · ROS {{ ros_distro }}</span>
-  <nav><a href="/">Graph</a><a href="/docs/">API docs</a><a href="/metrics">Metrics</a>
+  {% if demo %}<span class="warn">demo mode · no authentication</span>{% endif %}
+  <nav><a href="/">Graph</a><a href="/ui/recording">Recording</a><a href="/docs/">API docs</a><a href="/metrics">Metrics</a>
     {% match user %}{% when Some with (name) %}<span class="muted">{{ name }}</span> <a href="#" id="logout">Log out</a>{% when None %}{% endmatch %}</nav>
 </header>
 {% block content %}{% endblock %}

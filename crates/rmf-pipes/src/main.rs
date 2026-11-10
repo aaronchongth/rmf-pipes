@@ -23,6 +23,7 @@ async fn main() -> anyhow::Result<()> {
     init_logging(config.log_format);
 
     let writes = config.writes().map_err(|e| anyhow::anyhow!(e))?;
+    let record_rules = config.record_rules().map_err(|e| anyhow::anyhow!(e))?;
     for rule in writes.publish.iter().chain(&writes.call) {
         if rule.matches_everything() {
             tracing::warn!(
@@ -33,6 +34,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Demo mode hands every caller admin rights: never on the network.
+    if config.demo && !config.listen.ip().is_loopback() {
+        anyhow::bail!(
+            "refusing --demo on {}: demo mode has no authentication and only listens on a loopback address",
+            config.listen
+        );
+    }
     // Refuse an open, unauthenticated API on the network unless asked to.
     if config.database_url.is_none()
         && !config.listen.ip().is_loopback()
@@ -76,9 +84,26 @@ async fn main() -> anyhow::Result<()> {
     let bus = tokio::task::spawn_blocking(move || pipes_bus::HirozBus::connect(bus_config))
         .await
         .context("joining zenoh")??;
-    let auth = match &config.database_url {
-        Some(url) => Some(connect_auth(&config, url).await?),
-        None => {
+    let db = match &config.database_url {
+        Some(url) => {
+            let db = pipes_db::Db::connect(url, 10, config.database_connect_timeout).await?;
+            tracing::info!("database connected");
+            Some(db)
+        }
+        None => None,
+    };
+    let auth = match (&db, config.demo) {
+        (_, true) => {
+            tracing::warn!(
+                "demo mode: authentication is off and every caller on this machine acts as an admin"
+            );
+            if config.bootstrap_admin.is_some() {
+                tracing::warn!("--bootstrap-admin is ignored in demo mode");
+            }
+            None
+        }
+        (Some(db), false) => Some(enable_auth(&config, db.clone()).await?),
+        (None, false) => {
             tracing::warn!(
                 "no --database-url: authentication is disabled and the API is read-only"
             );
@@ -91,6 +116,42 @@ async fn main() -> anyhow::Result<()> {
         patterns = ?config.ingest.iter().map(ToString::to_string).collect::<Vec<_>>(),
         "hub running"
     );
+
+    // Recording. The database sink's writer outlives the recorder so that
+    // records emitted while stopping are still written.
+    let writer_stop = CancellationToken::new();
+    let (db_sink, db_writer) = match &db {
+        Some(db) => {
+            let (sink, task) = pipes_api::recording::DbSink::spawn(db.clone(), writer_stop.clone());
+            let sink: Arc<dyn pipes_core::record::RecordSink> = sink;
+            (Some(sink), Some(task))
+        }
+        None => (None, None),
+    };
+    let recorder = pipes_core::recorder::Recorder::new(
+        hub.clone(),
+        config.recorder(),
+        pipes_core::recorder::Sinks {
+            console: Arc::new(pipes_core::record::ConsoleSink),
+            database: db_sink,
+        },
+        record_rules,
+    )
+    .map_err(|e| anyhow::anyhow!("--record-config: {e}"))?;
+    let recorder_task = recorder.spawn(shutdown.clone());
+    tracing::info!(
+        rules = ?recorder.rules().iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+        "recorder running"
+    );
+    if let Some(db) = &db
+        && !config.record_retention.is_zero()
+    {
+        tokio::spawn(purge_records(
+            db.clone(),
+            config.record_retention,
+            shutdown.clone(),
+        ));
+    }
 
     let listener = tokio::net::TcpListener::bind(config.listen)
         .await
@@ -105,17 +166,24 @@ async fn main() -> anyhow::Result<()> {
         shutdown.clone(),
     )
     .with_max_streams(config.max_streams)
-    .with_writes(writes);
+    .with_writes(writes)
+    .with_recorder(recorder);
     if config.database_url.is_none()
+        && !config.demo
         && !(config.allow_publish.is_empty() && config.allow_call.is_empty())
     {
         tracing::warn!(
-            "--allow-publish/--allow-call need --database-url: without authentication nothing can be written"
+            "--allow-publish/--allow-call need --database-url or --demo: without either nothing can be written"
         );
     }
     if let Some(auth) = auth {
         tokio::spawn(purge_sessions(auth.db.clone(), shutdown.clone()));
         state = state.with_auth(auth);
+    } else if let Some(db) = db.clone() {
+        state = state.with_database(db);
+    }
+    if config.demo {
+        state = state.with_demo();
     }
     let outcome = pipes_api::serve::serve(
         listener,
@@ -125,6 +193,20 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
     shutdown.cancel();
+    if tokio::time::timeout(config.shutdown_drain, recorder_task)
+        .await
+        .is_err()
+    {
+        tracing::warn!("recorder did not stop within the drain deadline");
+    }
+    writer_stop.cancel();
+    if let Some(task) = db_writer
+        && tokio::time::timeout(config.shutdown_drain, task)
+            .await
+            .is_err()
+    {
+        tracing::warn!("buffered records were not all written within the drain deadline");
+    }
     if tokio::time::timeout(config.shutdown_drain, hub_task)
         .await
         .is_err()
@@ -135,11 +217,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Connect to Postgres (applying migrations), bootstrap the first admin if
-/// asked, and build the auth service.
-async fn connect_auth(config: &Config, url: &str) -> anyhow::Result<pipes_api::auth::AuthService> {
-    let db = pipes_db::Db::connect(url, 10, config.database_connect_timeout).await?;
-    tracing::info!("database connected; authentication is enabled");
+/// Bootstrap the first admin if asked, and build the auth service over `db`.
+async fn enable_auth(
+    config: &Config,
+    db: pipes_db::Db,
+) -> anyhow::Result<pipes_api::auth::AuthService> {
+    tracing::info!("authentication is enabled");
     let users = db.count_users().await?;
     match (&config.bootstrap_admin, users) {
         (Some(name), 0) => {
@@ -176,6 +259,34 @@ async fn purge_sessions(db: pipes_db::Db, shutdown: CancellationToken) {
                 Ok(_) => {}
                 Err(err) => tracing::warn!(%err, "cannot purge expired sessions"),
             },
+        }
+    }
+}
+
+/// Delete records older than `retention`, at startup and then hourly.
+async fn purge_records(
+    db: pipes_db::Db,
+    retention: std::time::Duration,
+    shutdown: CancellationToken,
+) {
+    let mut every = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            _ = every.tick() => {
+                // A retention beyond the representable past keeps everything.
+                let Some(cutoff) = time::Duration::try_from(retention)
+                    .ok()
+                    .and_then(|d| time::OffsetDateTime::now_utc().checked_sub(d))
+                else {
+                    continue;
+                };
+                match db.purge_records(cutoff).await {
+                    Ok(n) if n > 0 => tracing::info!(n, "purged old records"),
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(%err, "cannot purge old records"),
+                }
+            }
         }
     }
 }

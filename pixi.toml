@@ -21,6 +21,13 @@ run = "cargo run --locked -p rmf-pipes --"
 # L4: real rmw_zenoh_cpp from /opt/ros/$ROS_DISTRO. Skips loudly if missing,
 # fails instead when PIPES_INTEROP_REQUIRED=1.
 interop = "cargo test --locked -p pipes-testkit --test interop -- --ignored --test-threads=1 --nocapture"
+# The local end-to-end demo (see demo/nav2/README.md): next_gen_prototype's Nav2
+# stack in Docker, rmf-pipes on the host in demo mode, recording to Postgres.
+demo-up = "scripts/demo.sh up"
+demo = { cmd = "scripts/demo.sh run", depends-on = ["db-start"] }
+demo-goal = "scripts/demo.sh goal"
+demo-check = "scripts/demo.sh check"
+demo-down = "scripts/demo.sh down"
 
 [dependencies]
 postgresql = ">=18.4,<19"

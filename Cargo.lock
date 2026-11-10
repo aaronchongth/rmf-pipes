@@ -2670,6 +2670,7 @@ dependencies = [
  "axum",
  "futures",
  "http-body-util",
+ "metrics",
  "pipes-core",
  "pipes-db",
  "serde",
@@ -2708,6 +2709,7 @@ name = "pipes-core"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64 0.23.1",
  "futures",
  "metrics",
  "serde",
@@ -3276,10 +3278,13 @@ dependencies = [
  "pipes-db",
  "pipes-testkit",
  "reqwest",
+ "serde",
  "serde_json",
  "sqlx",
+ "time",
  "tokio",
  "tokio-util",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

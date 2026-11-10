@@ -127,6 +127,21 @@ impl std::str::FromStr for TopicPattern {
     }
 }
 
+/// Serialized as the pattern as written.
+impl serde::Serialize for TopicPattern {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.source)
+    }
+}
+
+/// Deserialized from a string, validated by [`TopicPattern::parse`].
+impl<'de> serde::Deserialize<'de> for TopicPattern {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Self::parse(&s).map_err(serde::de::Error::custom)
+    }
+}
+
 /// True if any of `patterns` matches `topic`.
 pub fn any_match(patterns: &[TopicPattern], topic: &str) -> bool {
     patterns.iter().any(|p| p.matches(topic))

@@ -4,8 +4,19 @@ rmf-pipes is the data layer for next-generation [Open-RMF](https://github.com/op
 - watches a ROS 2 system over [zenoh](https://zenoh.io), via [hiroz](https://github.com/ZettaScaleLabs/hiroz) and rmw_zenoh
 - decodes any topic at runtime
 - serves the data over REST, server-sent events and OpenAPI, plus a minimal introspection dashboard
+- records the topics, service requests and action goals, feedback, statuses and results you choose, to the console or Postgres
 
 Status: early development, see [docs/roadmap.md](docs/roadmap.md).
+
+## Demo
+The whole stack, locally, with next_gen_prototype's two-robot Nav2 demo (Docker) and rmf-pipes recording their navigation goals:
+```
+pixi run demo-up                    # Nav2 stack in Docker (builds the image the first time)
+pixi run demo                       # rmf-pipes in demo mode: http://127.0.0.1:18080/ui/recording
+pixi run demo-goal robot1 9.0 6.0   # watch the goal, statuses and result appear
+pixi run demo-down
+```
+See [demo/nav2/README.md](demo/nav2/README.md) for the walkthrough, including changing what's recorded while it runs.
 
 ## Quick start
 ```
@@ -23,7 +34,8 @@ You need Rust via [rustup](https://rustup.rs); `rust-toolchain.toml` pins the ve
 - `GET /api/v1/topic/latest?name=/chatter`: latest sample, subscribing on demand
 - `GET /api/v1/topic/schema?name=/chatter`: the message definition
 - `GET /api/v1/topic/stream?name=/chatter`: live samples as server-sent events
-- `POST /api/v1/topic/publish`, `POST /api/v1/service/call`: write to allowlisted topics and services (needs auth; audited)
+- `POST /api/v1/topic/publish`, `POST /api/v1/service/call`: write to allowlisted topics and services (needs auth or `--demo`; audited)
+- `GET /api/v1/recording`, `PUT /api/v1/recording/rules`, `GET /api/v1/recording/recent`, `GET /api/v1/records`: recording rules, their streams, and what they recorded ([docs/recording.md](docs/recording.md))
 - `GET /openapi.json`, `GET /docs/`: the OpenAPI description and Swagger UI
 - `GET /`: the introspection dashboard. `GET /metrics`: Prometheus metrics.
 
@@ -45,7 +57,7 @@ Give rmf-pipes a Postgres database and it requires login. Users have roles (view
 export RMF_PIPES_DATABASE_URL=postgres://rmf:…@db:5432/rmf_pipes
 RMF_PIPES_BOOTSTRAP_PASSWORD='…' pixi run run -- --bootstrap-admin admin
 ```
-Without a database the API is anonymous, read-only and loopback-only. See [docs/configuration.md](docs/configuration.md).
+Without a database the API is anonymous, read-only and loopback-only. `--demo` turns authentication off entirely (loopback only), with or without a database. See [docs/configuration.md](docs/configuration.md).
 
 ## Offline / air-gapped builds
 `--locked` still needs the crates.io index. For a site with no network:
@@ -61,6 +73,7 @@ cargo build -p rmf-pipes --no-default-features --features jazzy   # or kilted, r
 
 ## Docs
 - [architecture](docs/architecture.md): components, data flow, invariants
+- [recording](docs/recording.md): recording rules, how actions are observed, sinks, querying records
 - [decisions](docs/decisions.md): what's settled, and why
 - [testing](docs/testing.md): test levels and how to run them
 - [roadmap](docs/roadmap.md): phases and status
